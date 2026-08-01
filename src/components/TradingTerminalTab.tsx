@@ -86,29 +86,120 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
   // Popout Mode State
   const [isPopout, setIsPopout] = useState<boolean>(false);
 
-  // Overlays
-  const [showPermWalls, setShowPermWalls] = useState<boolean>(true);
-  const [showStrongWalls, setShowStrongWalls] = useState<boolean>(true);
-  const [showAstroSignals, setShowAstroSignals] = useState<boolean>(true);
-  const [astroTierFilter, setAstroTierFilter] = useState<'all' | 'gold' | 'silver' | 'bronze'>('all');
-  const [astroDirectionFilter, setAstroDirectionFilter] = useState<'all' | 'UP' | 'DOWN'>('all');
-  const [showVolume, setShowVolume] = useState<boolean>(true);
+  // Overlays with LocalStorage Persistence
+  const [showPermWalls, setShowPermWalls] = useState<boolean>(() => {
+    try {
+      const v = localStorage.getItem('tt_showPermWalls');
+      return v !== null ? JSON.parse(v) : true;
+    } catch (e) {
+      return true;
+    }
+  });
+  const [showStrongWalls, setShowStrongWalls] = useState<boolean>(() => {
+    try {
+      const v = localStorage.getItem('tt_showStrongWalls');
+      return v !== null ? JSON.parse(v) : true;
+    } catch (e) {
+      return true;
+    }
+  });
+  const [showAstroSignals, setShowAstroSignals] = useState<boolean>(() => {
+    try {
+      const v = localStorage.getItem('tt_showAstroSignals');
+      return v !== null ? JSON.parse(v) : true;
+    } catch (e) {
+      return true;
+    }
+  });
+  const [astroTierFilter, setAstroTierFilter] = useState<'all' | 'gold' | 'silver' | 'bronze'>(() => {
+    try {
+      const v = localStorage.getItem('tt_astroTierFilter');
+      return v ? (JSON.parse(v) as any) : 'all';
+    } catch (e) {
+      return 'all';
+    }
+  });
+  const [astroDirectionFilter, setAstroDirectionFilter] = useState<'all' | 'UP' | 'DOWN'>(() => {
+    try {
+      const v = localStorage.getItem('tt_astroDirectionFilter');
+      return v ? (JSON.parse(v) as any) : 'all';
+    } catch (e) {
+      return 'all';
+    }
+  });
+  const [showVolume, setShowVolume] = useState<boolean>(() => {
+    try {
+      const v = localStorage.getItem('tt_showVolume');
+      return v !== null ? JSON.parse(v) : true;
+    } catch (e) {
+      return true;
+    }
+  });
 
   // Zerodha Kite API parameters
-  const [kiteApiKey, setKiteApiKey] = useState<string>('');
-  const [kiteAccessToken, setKiteAccessToken] = useState<string>('');
+  const [kiteApiKey, setKiteApiKey] = useState<string>(() => localStorage.getItem('tt_kiteApiKey') || '');
+  const [kiteAccessToken, setKiteAccessToken] = useState<string>(() => localStorage.getItem('tt_kiteAccessToken') || '');
   const [kiteEnctoken, setKiteEnctoken] = useState<string>(
-    'h9CVFAGNIiKi0avcSn1HiPxfMTI19cVeVdLGj1p7MviLtlOfim6bD66J04nuwTeaP9Iy3vAeN0QAti05qu/EKz2rr4bmwmQyxvDtcO3UA0hHavtH18MOcQ=='
+    () =>
+      localStorage.getItem('tt_kiteEnctoken') ||
+      'h9CVFAGNIiKi0avcSn1HiPxfMTI19cVeVdLGj1p7MviLtlOfim6bD66J04nuwTeaP9Iy3vAeN0QAti05qu/EKz2rr4bmwmQyxvDtcO3UA0hHavtH18MOcQ=='
   );
-  const [kiteInstrumentToken, setKiteInstrumentToken] = useState<string>('256265'); // Default Nifty 50
+  const [kiteInstrumentToken, setKiteInstrumentToken] = useState<string>(
+    () => localStorage.getItem('tt_kiteInstrumentToken') || '256265'
+  );
   const [kiteCustomUrl, setKiteCustomUrl] = useState<string>(
     'https://kite.zerodha.com/oms/instruments/historical/{instrument_token}/{interval}?user_id=GW0461&oi=1&from={from}&to={to}'
   );
   const [showConfigPanel, setShowConfigPanel] = useState<boolean>(false);
 
   // Live Polling State
-  const [isLivePolling, setIsLivePolling] = useState<boolean>(true);
-  const [pollIntervalSec, setPollIntervalSec] = useState<number>(10);
+  const [isLivePolling, setIsLivePolling] = useState<boolean>(() => {
+    try {
+      const v = localStorage.getItem('tt_isLivePolling');
+      return v !== null ? JSON.parse(v) : true;
+    } catch (e) {
+      return true;
+    }
+  });
+  const [pollIntervalSec, setPollIntervalSec] = useState<number>(() => {
+    try {
+      const v = localStorage.getItem('tt_pollIntervalSec');
+      return v !== null ? Number(v) : 10;
+    } catch (e) {
+      return 10;
+    }
+  });
+
+  // Persist toggles & configuration state to LocalStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('tt_showPermWalls', JSON.stringify(showPermWalls));
+      localStorage.setItem('tt_showStrongWalls', JSON.stringify(showStrongWalls));
+      localStorage.setItem('tt_showAstroSignals', JSON.stringify(showAstroSignals));
+      localStorage.setItem('tt_astroTierFilter', JSON.stringify(astroTierFilter));
+      localStorage.setItem('tt_astroDirectionFilter', JSON.stringify(astroDirectionFilter));
+      localStorage.setItem('tt_showVolume', JSON.stringify(showVolume));
+      localStorage.setItem('tt_isLivePolling', JSON.stringify(isLivePolling));
+      localStorage.setItem('tt_pollIntervalSec', String(pollIntervalSec));
+      if (kiteApiKey) localStorage.setItem('tt_kiteApiKey', kiteApiKey);
+      if (kiteAccessToken) localStorage.setItem('tt_kiteAccessToken', kiteAccessToken);
+      if (kiteEnctoken) localStorage.setItem('tt_kiteEnctoken', kiteEnctoken);
+      if (kiteInstrumentToken) localStorage.setItem('tt_kiteInstrumentToken', kiteInstrumentToken);
+    } catch (e) {}
+  }, [
+    showPermWalls,
+    showStrongWalls,
+    showAstroSignals,
+    astroTierFilter,
+    astroDirectionFilter,
+    showVolume,
+    isLivePolling,
+    pollIntervalSec,
+    kiteApiKey,
+    kiteAccessToken,
+    kiteEnctoken,
+    kiteInstrumentToken
+  ]);
 
   // Active Candle Data
   const [candles, setCandles] = useState<OHLCCandle[]>([]);
@@ -127,10 +218,15 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
 
   const isLoadingOlderRef = useRef<boolean>(false);
   const candlesRef = useRef<OHLCCandle[]>(candles);
+  const timeframeRef = useRef<TimeframeType>(timeframe);
 
   useEffect(() => {
     candlesRef.current = candles;
   }, [candles]);
+
+  useEffect(() => {
+    timeframeRef.current = timeframe;
+  }, [timeframe]);
 
   // Focus chart viewport on current date / latest price candle
   const focusOnCurrentDate = () => {
@@ -150,10 +246,14 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
     }
 
     const visibleBars = 75;
-    chart.timeScale().setVisibleLogicalRange({
+    const newRange = {
       from: Math.max(0, targetIndex - visibleBars + 12),
       to: targetIndex + 12
-    });
+    };
+    chart.timeScale().setVisibleLogicalRange(newRange);
+    try {
+      localStorage.setItem(`tt_range_${timeframeRef.current}`, JSON.stringify(newRange));
+    } catch (e) {}
   };
 
   // ESC key listener to exit popout full-screen mode
@@ -203,6 +303,12 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
   const handleResetZoom = () => {
     if (chartRef.current) {
       chartRef.current.timeScale().fitContent();
+      const range = chartRef.current.timeScale().getVisibleLogicalRange();
+      if (range) {
+        try {
+          localStorage.setItem(`tt_range_${timeframeRef.current}`, JSON.stringify(range));
+        } catch (e) {}
+      }
     }
   };
 
@@ -512,10 +618,15 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
     });
     volumeSeriesRef.current = volumeSeries;
 
-    // Subscribe to scroll-back range change for infinite history loading
+    // Subscribe to scroll-back range change for infinite history loading and persist zoom/pan state
     const handleLogicalRangeChange = (logicalRange: any) => {
-      if (logicalRange && logicalRange.from < 3 && !isLoadingOlderRef.current && candlesRef.current.length > 0) {
-        loadOlderHistory();
+      if (logicalRange) {
+        try {
+          localStorage.setItem(`tt_range_${timeframeRef.current}`, JSON.stringify(logicalRange));
+        } catch (e) {}
+        if (logicalRange.from < 3 && !isLoadingOlderRef.current && candlesRef.current.length > 0) {
+          loadOlderHistory();
+        }
       }
     };
     chart.timeScale().subscribeVisibleLogicalRangeChange(handleLogicalRangeChange);
@@ -704,7 +815,21 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
     // Restore or initialize Viewport Position & Zoom
     if (candles.length > 0) {
       if (isFirstLoadRef.current) {
-        focusOnCurrentDate();
+        let restored = false;
+        try {
+          const savedRangeStr = localStorage.getItem(`tt_range_${timeframeRef.current}`);
+          if (savedRangeStr) {
+            const savedRange = JSON.parse(savedRangeStr);
+            if (savedRange && typeof savedRange.from === 'number' && typeof savedRange.to === 'number') {
+              chart.timeScale().setVisibleLogicalRange(savedRange);
+              restored = true;
+            }
+          }
+        } catch (e) {}
+
+        if (!restored) {
+          focusOnCurrentDate();
+        }
         isFirstLoadRef.current = false;
       } else if (prevRange) {
         const currentEarliestTime = candles[0]?.time;
@@ -715,10 +840,14 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
           candles.length > prevCandleCountRef.current
         ) {
           const addedBarsCount = candles.length - prevCandleCountRef.current;
-          chart.timeScale().setVisibleLogicalRange({
+          const shiftedRange = {
             from: prevRange.from + addedBarsCount,
             to: prevRange.to + addedBarsCount
-          });
+          };
+          chart.timeScale().setVisibleLogicalRange(shiftedRange);
+          try {
+            localStorage.setItem(`tt_range_${timeframeRef.current}`, JSON.stringify(shiftedRange));
+          } catch (e) {}
         } else {
           // Live auto-poll update: keep exact zoom and pan range
           chart.timeScale().setVisibleLogicalRange(prevRange);
