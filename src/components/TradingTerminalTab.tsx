@@ -511,7 +511,24 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
           };
         });
 
-        setCandles(formatted);
+        if (isSilent) {
+          setCandles((prev) => {
+            if (prev.length === 0 || formatted.length === 0) return formatted;
+            const firstFormattedTime = formatted[0].time;
+            const olderPrepended = prev.filter((c) => c.time < firstFormattedTime);
+            return [...olderPrepended, ...formatted];
+          });
+        } else {
+          setCandles((prev) => {
+            if (prev.length === 0 || formatted.length === 0) return formatted;
+            const firstFormattedTime = formatted[0].time;
+            const olderPrepended = prev.filter((c) => c.time < firstFormattedTime);
+            if (olderPrepended.length > 0) {
+              return [...olderPrepended, ...formatted];
+            }
+            return formatted;
+          });
+        }
         const timeNow = new Date().toLocaleTimeString();
         setLastFetchedInfo(`Live Market Synced at ${timeNow} (${formatted.length} candles from Zerodha)`);
       } else {
@@ -831,26 +848,52 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
           focusOnCurrentDate();
         }
         isFirstLoadRef.current = false;
-      } else if (prevRange) {
+      } else {
         const currentEarliestTime = candles[0]?.time;
-        // Check if older candles were prepended to shift logical indices
+        const prevCount = prevCandleCountRef.current;
+        const newCount = candles.length;
+        let targetRange = prevRange;
+
         if (
+          prevRange &&
           prevEarliestTimeRef.current !== null &&
           currentEarliestTime < prevEarliestTimeRef.current &&
-          candles.length > prevCandleCountRef.current
+          newCount > prevCount
         ) {
-          const addedBarsCount = candles.length - prevCandleCountRef.current;
-          const shiftedRange = {
+          // Check if older candles were prepended to shift logical indices
+          const addedBarsCount = newCount - prevCount;
+          targetRange = {
             from: prevRange.from + addedBarsCount,
             to: prevRange.to + addedBarsCount
           };
-          chart.timeScale().setVisibleLogicalRange(shiftedRange);
-          try {
-            localStorage.setItem(`tt_range_${timeframeRef.current}`, JSON.stringify(shiftedRange));
-          } catch (e) {}
+        } else if (prevRange) {
+          // Check if new live bars were appended at right edge and user was viewing live edge
+          const wasAtRightEdge = prevCount > 0 && prevRange.to >= prevCount - 2;
+          if (newCount > prevCount && wasAtRightEdge) {
+            const addedBarsAtRight = newCount - prevCount;
+            targetRange = {
+              from: prevRange.from + addedBarsAtRight,
+              to: prevRange.to + addedBarsAtRight
+            };
+          }
         } else {
-          // Live auto-poll update: keep exact zoom and pan range
-          chart.timeScale().setVisibleLogicalRange(prevRange);
+          // Fallback if prevRange was null
+          try {
+            const savedRangeStr = localStorage.getItem(`tt_range_${timeframeRef.current}`);
+            if (savedRangeStr) {
+              const savedRange = JSON.parse(savedRangeStr);
+              if (savedRange && typeof savedRange.from === 'number' && typeof savedRange.to === 'number') {
+                targetRange = savedRange;
+              }
+            }
+          } catch (e) {}
+        }
+
+        if (targetRange) {
+          chart.timeScale().setVisibleLogicalRange(targetRange);
+          try {
+            localStorage.setItem(`tt_range_${timeframeRef.current}`, JSON.stringify(targetRange));
+          } catch (e) {}
         }
       }
     }
