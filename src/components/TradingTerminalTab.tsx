@@ -8,6 +8,7 @@ import {
   LineStyle,
   IChartApi,
   ISeriesApi,
+  IPriceLine,
   CandlestickData,
   Time,
   SeriesMarker
@@ -36,7 +37,9 @@ import {
   RotateCcw,
   Maximize2,
   Minimize2,
-  History
+  History,
+  Calendar,
+  Target
 } from 'lucide-react';
 import { MatrixData, DepartureEvent } from '../types';
 import { scanCriticalDates } from '../lib/matrix';
@@ -87,6 +90,8 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
   const [showPermWalls, setShowPermWalls] = useState<boolean>(true);
   const [showStrongWalls, setShowStrongWalls] = useState<boolean>(true);
   const [showAstroSignals, setShowAstroSignals] = useState<boolean>(true);
+  const [astroTierFilter, setAstroTierFilter] = useState<'all' | 'gold' | 'silver' | 'bronze'>('all');
+  const [astroDirectionFilter, setAstroDirectionFilter] = useState<'all' | 'UP' | 'DOWN'>('all');
   const [showVolume, setShowVolume] = useState<boolean>(true);
 
   // Zerodha Kite API parameters
@@ -101,6 +106,10 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
   );
   const [showConfigPanel, setShowConfigPanel] = useState<boolean>(false);
 
+  // Live Polling State
+  const [isLivePolling, setIsLivePolling] = useState<boolean>(true);
+  const [pollIntervalSec, setPollIntervalSec] = useState<number>(10);
+
   // Active Candle Data
   const [candles, setCandles] = useState<OHLCCandle[]>([]);
   const [activeHoverCandle, setActiveHoverCandle] = useState<OHLCCandle | null>(null);
@@ -110,6 +119,11 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
+  const priceLinesRef = useRef<IPriceLine[]>([]);
+  const markersPrimitiveRef = useRef<any>(null);
+  const isFirstLoadRef = useRef<boolean>(true);
+  const prevCandleCountRef = useRef<number>(0);
+  const prevEarliestTimeRef = useRef<number | null>(null);
 
   const isLoadingOlderRef = useRef<boolean>(false);
   const candlesRef = useRef<OHLCCandle[]>(candles);
@@ -117,6 +131,30 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
   useEffect(() => {
     candlesRef.current = candles;
   }, [candles]);
+
+  // Focus chart viewport on current date / latest price candle
+  const focusOnCurrentDate = () => {
+    const chart = chartRef.current;
+    if (!chart || candles.length === 0) return;
+
+    const todayStr = new Date().toISOString().split('T')[0];
+    let targetIndex = candles.findIndex((c) => {
+      const d = new Date(c.time * 1000);
+      const dStrLocal = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const dStrUtc = d.toISOString().split('T')[0];
+      return dStrLocal === todayStr || dStrUtc === todayStr;
+    });
+
+    if (targetIndex === -1) {
+      targetIndex = candles.length - 1; // Default to latest candle
+    }
+
+    const visibleBars = 75;
+    chart.timeScale().setVisibleLogicalRange({
+      from: Math.max(0, targetIndex - visibleBars + 12),
+      to: targetIndex + 12
+    });
+  };
 
   // ESC key listener to exit popout full-screen mode
   useEffect(() => {
@@ -283,13 +321,13 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
   }, [matrix, validDates, nDays, ringLo, ringHi, minHighlight]);
 
   // Extract Critical Astro Signals
-  const astroEvents = useMemo(() => {
+  const rawAstroEvents = useMemo(() => {
     const raw = scanCriticalDates(matrix, dateFrom, dateTo, priceLo, priceHi, orb, minHighlight);
     const signalMap = new Map<string, DepartureEvent>();
 
     raw.forEach((e) => {
-      if (e.sig && (e.sig.tier === 'gold' || e.sig.tier === 'silver')) {
-        const key = `${e.date}_${e.price}`;
+      if (e.sig) {
+        const key = `${e.date}_${e.price}_${e.body}_${e.aspect}`;
         const existing = signalMap.get(key);
         if (!existing || (e.sig.lift || 0) > (existing.sig?.lift || 0)) {
           signalMap.set(key, e);
@@ -297,10 +335,19 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
       }
     });
 
-    return Array.from(signalMap.values())
-      .sort((a, b) => (b.sig?.lift || 0) - (a.sig?.lift || 0))
-      .slice(0, 25);
+    return Array.from(signalMap.values());
   }, [matrix, dateFrom, dateTo, priceLo, priceHi, orb, minHighlight]);
+
+  const filteredAstroEvents = useMemo(() => {
+    return rawAstroEvents
+      .filter((ev) => {
+        if (!ev.sig) return false;
+        if (astroTierFilter !== 'all' && ev.sig.tier !== astroTierFilter) return false;
+        if (astroDirectionFilter !== 'all' && ev.sig.direction !== astroDirectionFilter) return false;
+        return true;
+      })
+      .sort((a, b) => a.date.localeCompare(b.date));
+  }, [rawAstroEvents, astroTierFilter, astroDirectionFilter]);
 
   // Construct Kite Live URL string for preview/fetch
   const constructedKiteUrl = useMemo(() => {
@@ -319,14 +366,17 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
   }, [kiteCustomUrl, kiteInstrumentToken, timeframe, dateFrom, dateTo]);
 
   // Fetch / Load Market Candles from Zerodha Kite
-  const loadCandles = async () => {
-    setIsLoading(true);
+  const loadCandles = async (isSilent = false) => {
+    if (!isSilent) {
+      setIsLoading(true);
+      isFirstLoadRef.current = true;
+    }
     setErrorMsg(null);
 
     try {
       if (!kiteEnctoken && (!kiteApiKey || !kiteAccessToken)) {
         setLastFetchedInfo('Please enter your Zerodha Enctoken or API Key in the configuration panel below to connect.');
-        setIsLoading(false);
+        if (!isSilent) setIsLoading(false);
         return;
       }
 
@@ -356,18 +406,23 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
         });
 
         setCandles(formatted);
-        setLastFetchedInfo(`Successfully loaded ${formatted.length} live candles from Zerodha Kite!`);
+        const timeNow = new Date().toLocaleTimeString();
+        setLastFetchedInfo(`Live Market Synced at ${timeNow} (${formatted.length} candles from Zerodha)`);
       } else {
-        setCandles([]);
-        setErrorMsg(json.message || 'Failed to load candles from Zerodha Kite API');
-        setLastFetchedInfo('Zerodha Kite API returned an error. Check credentials or instrument token.');
+        if (!isSilent) {
+          setCandles([]);
+          setErrorMsg(json.message || 'Failed to load candles from Zerodha Kite API');
+          setLastFetchedInfo('Zerodha Kite API returned an error. Check credentials or instrument token.');
+        }
       }
     } catch (err: any) {
-      console.warn('[Zerodha Kite Fetch Error]', err);
-      setErrorMsg(err.message || 'Network error fetching Zerodha Kite candles');
-      setLastFetchedInfo('Failed to connect to Zerodha Kite proxy.');
+      if (!isSilent) {
+        console.warn('[Zerodha Kite Fetch Error]', err);
+        setErrorMsg(err.message || 'Network error fetching Zerodha Kite candles');
+        setLastFetchedInfo('Failed to connect to Zerodha Kite proxy.');
+      }
     } finally {
-      setIsLoading(false);
+      if (!isSilent) setIsLoading(false);
     }
   };
 
@@ -376,22 +431,25 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
     loadCandles();
   }, [timeframe, dateFrom, dateTo, kiteEnctoken, kiteApiKey, kiteAccessToken, kiteInstrumentToken]);
 
-  // Render TradingView Lightweight Chart Canvas
+  // Auto-poll Zerodha Kite candles during live market
+  useEffect(() => {
+    if (!isLivePolling || pollIntervalSec <= 0) return;
+    const interval = setInterval(() => {
+      loadCandles(true);
+    }, Math.max(1, pollIntervalSec) * 1000);
+    return () => clearInterval(interval);
+  }, [isLivePolling, pollIntervalSec, constructedKiteUrl, kiteEnctoken, kiteApiKey, kiteAccessToken, kiteInstrumentToken]);
+
+  // 1. Initialize TradingView Lightweight Chart Canvas Instance (mount / unmount / container resize)
   useEffect(() => {
     if (!chartContainerRef.current) return;
-
-    // Clean up existing chart
-    if (chartRef.current) {
-      chartRef.current.remove();
-      chartRef.current = null;
-    }
 
     const container = chartContainerRef.current;
     const chartHeight = isPopout ? Math.max(620, window.innerHeight - 240) : 520;
 
     const chart = createChart(container, {
       layout: {
-        background: { type: ColorType.Solid, color: '#090d16' }, // Dark Slate/Gold aesthetic
+        background: { type: ColorType.Solid, color: '#090d16' },
         textColor: '#94a3b8'
       },
       grid: {
@@ -429,8 +487,8 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
 
     // Candlestick Series
     const candleSeries = chart.addSeries(CandlestickSeries, {
-      upColor: '#10b981', // Emerald
-      downColor: '#f43f5e', // Rose
+      upColor: '#10b981',
+      downColor: '#f43f5e',
       borderVisible: false,
       wickUpColor: '#10b981',
       wickDownColor: '#f43f5e'
@@ -438,107 +496,21 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
     candleSeriesRef.current = candleSeries;
 
     // Volume Series
-    if (showVolume) {
-      const volumeSeries = chart.addSeries(HistogramSeries, {
-        color: '#38bdf8',
-        priceFormat: {
-          type: 'volume'
-        },
-        priceScaleId: 'volume_scale'
-      });
+    const volumeSeries = chart.addSeries(HistogramSeries, {
+      color: '#38bdf8',
+      priceFormat: {
+        type: 'volume'
+      },
+      priceScaleId: 'volume_scale'
+    });
 
-      chart.priceScale('volume_scale').applyOptions({
-        scaleMargins: {
-          top: 0.8, // Place volume at bottom 20%
-          bottom: 0
-        }
-      });
-
-      volumeSeriesRef.current = volumeSeries;
-    }
-
-    // Set Candlestick & Volume Data
-    if (candles && candles.length > 0) {
-      const chartCandles: CandlestickData<Time>[] = candles.map((c) => ({
-        time: c.time as Time,
-        open: c.open,
-        high: c.high,
-        low: c.low,
-        close: c.close
-      }));
-
-      candleSeries.setData(chartCandles);
-
-      if (showVolume && volumeSeriesRef.current) {
-        const volumeData = candles.map((c) => ({
-          time: c.time as Time,
-          value: c.volume,
-          color: c.close >= c.open ? 'rgba(16, 185, 129, 0.4)' : 'rgba(244, 63, 94, 0.4)'
-        }));
-        volumeSeriesRef.current.setData(volumeData);
+    chart.priceScale('volume_scale').applyOptions({
+      scaleMargins: {
+        top: 0.8,
+        bottom: 0
       }
-
-      // Draw Permanent Wall Horizontal Price Lines
-      if (showPermWalls && permWalls.length > 0) {
-        permWalls.forEach((pw) => {
-          candleSeries.createPriceLine({
-            price: pw,
-            color: '#f59e0b', // Amber 500
-            lineWidth: 2,
-            lineStyle: LineStyle.Solid,
-            axisLabelVisible: true,
-            title: `PERM WALL ${pw.toLocaleString()}`
-          });
-        });
-      }
-
-      // Draw Strong Wall Horizontal Price Lines
-      if (showStrongWalls && strongWalls.length > 0) {
-        strongWalls.forEach((sw) => {
-          candleSeries.createPriceLine({
-            price: sw,
-            color: '#94a3b8', // Slate 400
-            lineWidth: 1,
-            lineStyle: LineStyle.Dashed,
-            axisLabelVisible: true,
-            title: `STRONG WALL ${sw.toLocaleString()}`
-          });
-        });
-      }
-
-      // Set Astro Signal Markers on Candlestick Chart
-      if (showAstroSignals && astroEvents.length > 0) {
-        const markers: SeriesMarker<Time>[] = [];
-
-        // Map candles by date string
-        const dateToTimestamp = new Map<string, Time>();
-        candles.forEach((c) => {
-          const dStr = new Date(c.time * 1000).toISOString().split('T')[0];
-          if (!dateToTimestamp.has(dStr)) {
-            dateToTimestamp.set(dStr, c.time as Time);
-          }
-        });
-
-        astroEvents.forEach((ev) => {
-          const matchTime = dateToTimestamp.get(ev.date);
-          if (matchTime) {
-            const isGold = ev.sig?.tier === 'gold';
-            markers.push({
-              time: matchTime,
-              position: 'aboveBar',
-              color: isGold ? '#a855f7' : '#06b6d4',
-              shape: 'arrowDown',
-              text: `${isGold ? 'GOLD' : 'SLV'} ${ev.price} (${ev.body})`
-            });
-          }
-        });
-
-        createSeriesMarkers(candleSeries, markers);
-      }
-
-      // Fit chart content neatly
-      chart.timeScale().fitContent();
-    }
+    });
+    volumeSeriesRef.current = volumeSeries;
 
     // Subscribe to scroll-back range change for infinite history loading
     const handleLogicalRangeChange = (logicalRange: any) => {
@@ -546,14 +518,12 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
         loadOlderHistory();
       }
     };
-
     chart.timeScale().subscribeVisibleLogicalRangeChange(handleLogicalRangeChange);
 
     // Subscribe to crosshair move for tooltip
     chart.subscribeCrosshairMove((param) => {
       if (param.time && param.seriesData.get(candleSeries)) {
-        const data = param.seriesData.get(candleSeries) as CandlestickData;
-        const matched = candles.find((c) => c.time === param.time);
+        const matched = candlesRef.current.find((c) => c.time === param.time);
         if (matched) {
           setActiveHoverCandle(matched);
         }
@@ -573,14 +543,192 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
 
     window.addEventListener('resize', handleResize);
 
+    // Mark as first load when chart instance is created
+    isFirstLoadRef.current = true;
+
     return () => {
       window.removeEventListener('resize', handleResize);
+      priceLinesRef.current = [];
+      markersPrimitiveRef.current = null;
       if (chartRef.current) {
         chartRef.current.remove();
         chartRef.current = null;
+        candleSeriesRef.current = null;
+        volumeSeriesRef.current = null;
       }
     };
-  }, [candles, permWalls, strongWalls, showPermWalls, showStrongWalls, showAstroSignals, showVolume, astroEvents, isPopout]);
+  }, [isPopout]);
+
+  // 2. Update Series Data, Price Lines & Astro Markers without resetting Zoom or Re-creating Chart
+  useEffect(() => {
+    const chart = chartRef.current;
+    const candleSeries = candleSeriesRef.current;
+    const volumeSeries = volumeSeriesRef.current;
+
+    if (!chart || !candleSeries) return;
+
+    // Preserve user visible range before applying new data
+    const prevRange = chart.timeScale().getVisibleLogicalRange();
+
+    // Set Candlestick Data
+    const chartCandles: CandlestickData<Time>[] = candles.map((c) => ({
+      time: c.time as Time,
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close
+    }));
+    candleSeries.setData(chartCandles);
+
+    // Set Volume Data
+    if (volumeSeries) {
+      if (showVolume) {
+        const volumeData = candles.map((c) => ({
+          time: c.time as Time,
+          value: c.volume,
+          color: c.close >= c.open ? 'rgba(16, 185, 129, 0.4)' : 'rgba(244, 63, 94, 0.4)'
+        }));
+        volumeSeries.setData(volumeData);
+      } else {
+        volumeSeries.setData([]);
+      }
+    }
+
+    // Clear previous price lines
+    priceLinesRef.current.forEach((line) => {
+      try {
+        candleSeries.removePriceLine(line);
+      } catch (e) {
+        // ignore
+      }
+    });
+    priceLinesRef.current = [];
+
+    // Draw Permanent Wall Horizontal Price Lines
+    if (showPermWalls && permWalls.length > 0) {
+      permWalls.forEach((pw) => {
+        const pl = candleSeries.createPriceLine({
+          price: pw,
+          color: '#f59e0b', // Amber 500
+          lineWidth: 2,
+          lineStyle: LineStyle.Solid,
+          axisLabelVisible: true,
+          title: `PERM WALL ${pw.toLocaleString()}`
+        });
+        priceLinesRef.current.push(pl);
+      });
+    }
+
+    // Draw Strong Wall Horizontal Price Lines
+    if (showStrongWalls && strongWalls.length > 0) {
+      strongWalls.forEach((sw) => {
+        const pl = candleSeries.createPriceLine({
+          price: sw,
+          color: '#94a3b8', // Slate 400
+          lineWidth: 1,
+          lineStyle: LineStyle.Dashed,
+          axisLabelVisible: true,
+          title: `STRONG WALL ${sw.toLocaleString()}`
+        });
+        priceLinesRef.current.push(pl);
+      });
+    }
+
+    // Set or Clear Astro Signal Markers on Candlestick Chart
+    if (showAstroSignals && filteredAstroEvents.length > 0 && candles.length > 0) {
+      const dateToTimestamp = new Map<string, Time>();
+
+      candles.forEach((c) => {
+        const d = new Date(c.time * 1000);
+        const dStrUtc = d.toISOString().split('T')[0];
+        const dStrLocal = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+        if (!dateToTimestamp.has(dStrUtc)) {
+          dateToTimestamp.set(dStrUtc, c.time as Time);
+        }
+        if (!dateToTimestamp.has(dStrLocal)) {
+          dateToTimestamp.set(dStrLocal, c.time as Time);
+        }
+      });
+
+      const timeToMarker = new Map<Time, SeriesMarker<Time>>();
+
+      filteredAstroEvents.forEach((ev) => {
+        const matchTime = dateToTimestamp.get(ev.date);
+        if (matchTime && !timeToMarker.has(matchTime)) {
+          const isGold = ev.sig?.tier === 'gold';
+          const isSilver = ev.sig?.tier === 'silver';
+          const tierLabel = isGold ? 'GOLD' : isSilver ? 'SLV' : 'BRZ';
+          const isUp = ev.sig?.direction === 'UP';
+          const shape = isUp ? 'arrowUp' : 'arrowDown';
+          const position = isUp ? 'belowBar' : 'aboveBar';
+          const color = isGold ? '#a855f7' : isSilver ? '#06b6d4' : '#f59e0b';
+
+          timeToMarker.set(matchTime, {
+            time: matchTime,
+            position: position,
+            color: color,
+            shape: shape,
+            text: `${tierLabel} ${ev.price} (${ev.body})`
+          });
+        }
+      });
+
+      const sortedMarkers = Array.from(timeToMarker.values()).sort((a, b) => (a.time as number) - (b.time as number));
+
+      if (markersPrimitiveRef.current) {
+        try {
+          markersPrimitiveRef.current.setMarkers(sortedMarkers);
+        } catch (e) {
+          try {
+            candleSeries.detachPrimitive(markersPrimitiveRef.current);
+          } catch (e2) {}
+          markersPrimitiveRef.current = createSeriesMarkers(candleSeries, sortedMarkers);
+        }
+      } else {
+        markersPrimitiveRef.current = createSeriesMarkers(candleSeries, sortedMarkers);
+      }
+    } else {
+      if (markersPrimitiveRef.current) {
+        try {
+          markersPrimitiveRef.current.setMarkers([]);
+        } catch (e) {
+          try {
+            candleSeries.detachPrimitive(markersPrimitiveRef.current);
+          } catch (e2) {}
+          markersPrimitiveRef.current = null;
+        }
+      }
+    }
+
+    // Restore or initialize Viewport Position & Zoom
+    if (candles.length > 0) {
+      if (isFirstLoadRef.current) {
+        focusOnCurrentDate();
+        isFirstLoadRef.current = false;
+      } else if (prevRange) {
+        const currentEarliestTime = candles[0]?.time;
+        // Check if older candles were prepended to shift logical indices
+        if (
+          prevEarliestTimeRef.current !== null &&
+          currentEarliestTime < prevEarliestTimeRef.current &&
+          candles.length > prevCandleCountRef.current
+        ) {
+          const addedBarsCount = candles.length - prevCandleCountRef.current;
+          chart.timeScale().setVisibleLogicalRange({
+            from: prevRange.from + addedBarsCount,
+            to: prevRange.to + addedBarsCount
+          });
+        } else {
+          // Live auto-poll update: keep exact zoom and pan range
+          chart.timeScale().setVisibleLogicalRange(prevRange);
+        }
+      }
+    }
+
+    prevCandleCountRef.current = candles.length;
+    prevEarliestTimeRef.current = candles[0]?.time ?? null;
+  }, [candles, permWalls, strongWalls, showPermWalls, showStrongWalls, showAstroSignals, showVolume, filteredAstroEvents]);
 
   // Last candle for display stats
   const latestCandle = candles[candles.length - 1];
@@ -599,6 +747,46 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
             </div>
 
             <button
+              onClick={() => {
+                setIsLivePolling(!isLivePolling);
+                if (!isLivePolling) loadCandles(true);
+              }}
+              title={isLivePolling ? `Live Auto-Sync Active (Every ${pollIntervalSec}s)` : "Click to enable Live Auto-Sync"}
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md font-mono text-xs font-bold transition-all border ${
+                isLivePolling
+                  ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40 shadow-sm shadow-emerald-500/10'
+                  : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-200'
+              }`}
+            >
+              <span className={`w-2 h-2 rounded-full ${isLivePolling ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
+              <span>{isLivePolling ? `LIVE ${pollIntervalSec}s` : 'PAUSED'}</span>
+            </button>
+
+            <select
+              value={pollIntervalSec}
+              onChange={(e) => setPollIntervalSec(Math.max(1, Number(e.target.value)))}
+              className="bg-slate-950 border border-slate-800 text-amber-300 font-mono text-xs font-semibold rounded px-2 py-1.5 focus:outline-none focus:border-amber-500/50 cursor-pointer"
+              title="Set Auto-Sync Refresh Interval"
+            >
+              <option value={1}>1s</option>
+              <option value={2}>2s</option>
+              <option value={3}>3s</option>
+              <option value={5}>5s</option>
+              <option value={10}>10s</option>
+              <option value={15}>15s</option>
+              <option value={30}>30s</option>
+              <option value={60}>60s</option>
+            </select>
+
+            <button
+              onClick={() => loadCandles(false)}
+              title="Manual Refresh Market Candles"
+              className="p-1.5 text-slate-400 hover:text-amber-300 rounded hover:bg-slate-950 border border-slate-800 transition-colors"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin text-amber-400' : ''}`} />
+            </button>
+
+            <button
               onClick={() => setShowConfigPanel(!showConfigPanel)}
               className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md font-mono text-xs font-semibold border transition-all ${
                 showConfigPanel
@@ -606,7 +794,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
                   : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-200'
               }`}
             >
-              <span>{showConfigPanel ? 'Close Credentials' : 'API / Token Config'}</span>
+              <span>{showConfigPanel ? 'Close Config' : 'API / Token Config'}</span>
             </button>
           </div>
 
@@ -650,10 +838,19 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
 
             <button
               onClick={handleResetZoom}
-              title="Fit Content / Reset Zoom"
+              title="Fit All Content / Reset Zoom"
               className="p-1.5 text-slate-400 hover:text-amber-300 rounded hover:bg-slate-900 transition-colors"
             >
               <RotateCcw className="w-3.5 h-3.5" />
+            </button>
+
+            <button
+              onClick={focusOnCurrentDate}
+              title="Point Chart to Current Date (Today)"
+              className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-mono font-bold rounded text-teal-300 bg-teal-500/20 border border-teal-500/40 hover:bg-teal-500/30 transition-all"
+            >
+              <Target className="w-3.5 h-3.5 text-teal-400" />
+              <span>Current Date</span>
             </button>
 
             <div className="w-px h-4 bg-slate-800 my-auto" />
@@ -705,17 +902,46 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
               Strong Walls ({strongWalls.length})
             </button>
 
-            <button
-              onClick={() => setShowAstroSignals(!showAstroSignals)}
-              className={`flex items-center gap-1.5 px-2.5 py-1.2 rounded-lg font-mono text-[11px] font-semibold border transition-all ${
-                showAstroSignals
-                  ? 'bg-purple-500/15 text-purple-300 border-purple-500/40'
-                  : 'bg-slate-950 text-slate-500 border-slate-800'
-              }`}
-            >
-              <Sparkles className="w-3 h-3 text-purple-400" />
-              Astro Signals ({astroEvents.length})
-            </button>
+            <div className="flex items-center gap-1.5 bg-slate-950 p-1 rounded-lg border border-slate-800">
+              <button
+                onClick={() => setShowAstroSignals(!showAstroSignals)}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md font-mono text-[11px] font-semibold border transition-all ${
+                  showAstroSignals
+                    ? 'bg-purple-500/15 text-purple-300 border-purple-500/40'
+                    : 'bg-slate-900 text-slate-500 border-slate-800'
+                }`}
+              >
+                <Sparkles className="w-3 h-3 text-purple-400" />
+                Astro Signals ({filteredAstroEvents.length})
+              </button>
+
+              {showAstroSignals && (
+                <>
+                  <select
+                    value={astroTierFilter}
+                    onChange={(e) => setAstroTierFilter(e.target.value as any)}
+                    className="bg-slate-900 border border-purple-500/30 text-purple-300 font-mono text-[11px] font-semibold rounded px-2 py-1 focus:outline-none focus:border-purple-400 cursor-pointer"
+                    title="Filter Astro Signals by Tier"
+                  >
+                    <option value="all">All Tiers</option>
+                    <option value="gold">🥇 Gold Only</option>
+                    <option value="silver">🥈 Silver Only</option>
+                    <option value="bronze">🥉 Bronze Only</option>
+                  </select>
+
+                  <select
+                    value={astroDirectionFilter}
+                    onChange={(e) => setAstroDirectionFilter(e.target.value as any)}
+                    className="bg-slate-900 border border-purple-500/30 text-purple-300 font-mono text-[11px] font-semibold rounded px-2 py-1 focus:outline-none focus:border-purple-400 cursor-pointer"
+                    title="Filter Astro Signals by Direction Bias"
+                  >
+                    <option value="all">All Dir</option>
+                    <option value="UP">Bullish ↑</option>
+                    <option value="DOWN">Bearish ↓</option>
+                  </select>
+                </>
+              )}
+            </div>
 
             <button
               onClick={loadCandles}
@@ -796,6 +1022,20 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
                   onChange={(e) => setKiteInstrumentToken(e.target.value)}
                   placeholder="256265 for Nifty 50"
                   className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs font-mono text-amber-200 focus:outline-none focus:border-amber-400"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-mono text-slate-400 uppercase mb-1">
+                  Auto-Sync Rate (Seconds)
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={300}
+                  value={pollIntervalSec}
+                  onChange={(e) => setPollIntervalSec(Math.max(1, Number(e.target.value)))}
+                  className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs font-mono text-emerald-300 focus:outline-none focus:border-emerald-400"
                 />
               </div>
             </div>
@@ -922,7 +1162,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
           </div>
           <div className="flex items-center gap-2 text-purple-300">
             <span className="w-2 h-2 rounded-full bg-purple-500" />
-            <span>Astro Departure Markers: {astroEvents.length}</span>
+            <span>Astro Departure Markers: {filteredAstroEvents.length}</span>
           </div>
         </div>
       </div>
@@ -991,17 +1231,32 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
               Active Astro Departure Signals
             </h4>
             <span className="text-[10px] font-mono bg-purple-500/10 text-purple-300 px-2 py-0.5 rounded border border-purple-500/20">
-              {astroEvents.length} Signals
+              {filteredAstroEvents.length} Signals
             </span>
           </div>
           <div className="space-y-1.5 pt-1 max-h-24 overflow-y-auto no-scrollbar font-mono text-xs text-slate-300">
-            {astroEvents.slice(0, 4).map((e, idx) => (
-              <div key={idx} className="flex items-center justify-between text-[11px] border-b border-slate-800/50 pb-1">
-                <span className="text-purple-300 font-bold">{e.date}</span>
-                <span className="text-slate-400">{e.body} {e.aspect}</span>
-                <span className="text-amber-300 font-semibold">@{e.price}</span>
-              </div>
-            ))}
+            {filteredAstroEvents.length > 0 ? (
+              filteredAstroEvents.slice(0, 6).map((e, idx) => (
+                <div key={idx} className="flex items-center justify-between text-[11px] border-b border-slate-800/50 pb-1">
+                  <div className="flex items-center gap-1.5">
+                    <span className={`px-1 py-0.2 rounded text-[9px] font-bold ${
+                      e.sig?.tier === 'gold' ? 'bg-amber-400/20 text-amber-300 border border-amber-400/30' :
+                      e.sig?.tier === 'silver' ? 'bg-cyan-400/20 text-cyan-300 border border-cyan-400/30' :
+                      'bg-orange-400/20 text-orange-300 border border-orange-400/30'
+                    }`}>
+                      {e.sig?.tier?.toUpperCase()}
+                    </span>
+                    <span className="text-purple-300 font-bold">{e.date}</span>
+                  </div>
+                  <span className="text-slate-400">{e.body} {e.aspect}</span>
+                  <span className={`font-semibold ${e.sig?.direction === 'UP' ? 'text-emerald-400' : 'text-rose-400'}`}>
+                    {e.sig?.direction === 'UP' ? '↑' : '↓'} @{e.price}
+                  </span>
+                </div>
+              ))
+            ) : (
+              <span className="text-xs font-mono text-slate-500">No signals match current filter</span>
+            )}
           </div>
         </div>
       </div>
