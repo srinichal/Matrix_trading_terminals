@@ -1,0 +1,6 @@
+{
+  "name": "Nifty Planetary Matrix & Gann Wheel Intelligence",
+  "description": "Advanced Gann Wheel planetary timing matrix with ephemeris calculations, 11-aspect pressure analysis, critical breakout date detection, box analysis, and intraday ring levels.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

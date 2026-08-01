@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  nifty-matrix-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: nifty-planetary-matrix:latest
+    container_name: nifty-planetary-matrix
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+    restart: unless-stopped
