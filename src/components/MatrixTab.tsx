@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { MatrixData, MatrixHit } from '../types';
 import { ringToDegree, projectDeparture, fromIso, computeMatrix } from '../lib/matrix';
 import { PLANET_META, ASPECT_META, ALL_ASPECTS, MAJOR_ASPECTS, signOf } from '../lib/astronomy';
@@ -40,8 +40,28 @@ export const MatrixTab: React.FC<MatrixTabProps> = ({
   const [selectedCell, setSelectedCell] = useState<{ date: string; ring: number } | null>(null);
 
   // Market Price Row Highlight
-  const [spotPriceInput, setSpotPriceInput] = useState<string>('24350');
-  const [activeSpotPrice, setActiveSpotPrice] = useState<number | null>(24350);
+  const [spotPriceInput, setSpotPriceInput] = useState<string>(
+    () => localStorage.getItem('mt_spotPriceInput') || '24350'
+  );
+  const [activeSpotPrice, setActiveSpotPrice] = useState<number | null>(() => {
+    try {
+      const v = localStorage.getItem('mt_activeSpotPrice');
+      return v !== null ? Number(v) : 24350;
+    } catch (e) {
+      return 24350;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('mt_spotPriceInput', spotPriceInput);
+      if (activeSpotPrice !== null) {
+        localStorage.setItem('mt_activeSpotPrice', String(activeSpotPrice));
+      } else {
+        localStorage.removeItem('mt_activeSpotPrice');
+      }
+    } catch (e) {}
+  }, [spotPriceInput, activeSpotPrice]);
 
   const spotRing = activeSpotPrice !== null ? Math.round(activeSpotPrice / 100) : null;
 

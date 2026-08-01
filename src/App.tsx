@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Header } from './components/Header';
 import { ControlsBar } from './components/ControlsBar';
 import { Navigation, TabType } from './components/Navigation';
@@ -15,34 +15,102 @@ import { computeMatrix, scanCriticalDates, computeBoxBreakouts } from './lib/mat
 import { ALL_ASPECTS, MAJOR_ASPECTS } from './lib/astronomy';
 
 export default function App() {
+  // Load initial computed parameters from LocalStorage if present
+  const initialComputedParams = useMemo(() => {
+    try {
+      const saved = localStorage.getItem('app_computedParams');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && parsed.dateFrom && parsed.dateTo) {
+          return {
+            dateFrom: String(parsed.dateFrom),
+            dateTo: String(parsed.dateTo),
+            priceLo: Number(parsed.priceLo) || 23000,
+            priceHi: Number(parsed.priceHi) || 26000,
+            dateStep: Number(parsed.dateStep) || 2,
+            orb: Number(parsed.orb) || 5.0,
+            minHighlight: Number(parsed.minHighlight) || 3,
+            aspectMode: (parsed.aspectMode === 'all' ? 'all' : 'major') as 'all' | 'major'
+          };
+        }
+      }
+    } catch (e) {}
+    return {
+      dateFrom: '2026-07-14',
+      dateTo: '2026-10-15',
+      priceLo: 23000,
+      priceHi: 26000,
+      dateStep: 2,
+      orb: 5.0,
+      minHighlight: 3,
+      aspectMode: 'major' as 'all' | 'major'
+    };
+  }, []);
+
   // Pending input states (edited freely in ControlsBar without triggering re-computation)
-  const [inputDateFrom, setInputDateFrom] = useState<string>('2026-07-14');
-  const [inputDateTo, setInputDateTo] = useState<string>('2026-10-15');
-  const [inputPriceLo, setInputPriceLo] = useState<number>(23000);
-  const [inputPriceHi, setInputPriceHi] = useState<number>(26000);
-  const [inputDateStep, setInputDateStep] = useState<number>(2);
-  const [inputOrb, setInputOrb] = useState<number>(5.0);
-  const [inputMinHighlight, setInputMinHighlight] = useState<number>(3);
-  const [inputAspectMode, setInputAspectMode] = useState<'all' | 'major'>('major');
+  const [inputDateFrom, setInputDateFrom] = useState<string>(initialComputedParams.dateFrom);
+  const [inputDateTo, setInputDateTo] = useState<string>(initialComputedParams.dateTo);
+  const [inputPriceLo, setInputPriceLo] = useState<number>(initialComputedParams.priceLo);
+  const [inputPriceHi, setInputPriceHi] = useState<number>(initialComputedParams.priceHi);
+  const [inputDateStep, setInputDateStep] = useState<number>(initialComputedParams.dateStep);
+  const [inputOrb, setInputOrb] = useState<number>(initialComputedParams.orb);
+  const [inputMinHighlight, setInputMinHighlight] = useState<number>(initialComputedParams.minHighlight);
+  const [inputAspectMode, setInputAspectMode] = useState<'all' | 'major'>(initialComputedParams.aspectMode);
 
   // Active computed parameters (used for computeMatrix & all tabs)
-  const [computedParams, setComputedParams] = useState({
-    dateFrom: '2026-07-14',
-    dateTo: '2026-10-15',
-    priceLo: 23000,
-    priceHi: 26000,
-    dateStep: 2,
-    orb: 5.0,
-    minHighlight: 3,
-    aspectMode: 'major' as 'all' | 'major'
+  const [computedParams, setComputedParams] = useState(initialComputedParams);
+
+  const [matrixOrbOverride, setMatrixOrbOverride] = useState<number | null>(() => {
+    try {
+      const saved = localStorage.getItem('app_matrixOrbOverride');
+      return saved !== null ? Number(saved) : null;
+    } catch (e) {
+      return null;
+    }
   });
 
-  const [matrixOrbOverride, setMatrixOrbOverride] = useState<number | null>(null);
+  const [activeTab, setActiveTab] = useState<TabType>(() => {
+    try {
+      const saved = localStorage.getItem('app_activeTab');
+      if (saved && ['terminal', 'overview', 'matrix', 'dates', 'calendar', 'boxes', 'intraday'].includes(saved)) {
+        return saved as TabType;
+      }
+    } catch (e) {}
+    return 'terminal';
+  });
 
-  const [activeTab, setActiveTab] = useState<TabType>('terminal');
-  const [focusDate, setFocusDate] = useState<string>('2026-07-14');
-  const [activePresetName, setActivePresetName] = useState<string>('Nifty 50');
+  const [focusDate, setFocusDate] = useState<string>(() => {
+    try {
+      return localStorage.getItem('app_focusDate') || initialComputedParams.dateFrom;
+    } catch (e) {
+      return initialComputedParams.dateFrom;
+    }
+  });
+
+  const [activePresetName, setActivePresetName] = useState<string>(() => {
+    try {
+      return localStorage.getItem('app_activePresetName') || 'Nifty 50';
+    } catch (e) {
+      return 'Nifty 50';
+    }
+  });
+
   const [signalsModalOpen, setSignalsModalOpen] = useState<boolean>(false);
+
+  // Persist primary App settings to LocalStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('app_activeTab', activeTab);
+      localStorage.setItem('app_computedParams', JSON.stringify(computedParams));
+      localStorage.setItem('app_activePresetName', activePresetName);
+      localStorage.setItem('app_focusDate', focusDate);
+      if (matrixOrbOverride !== null) {
+        localStorage.setItem('app_matrixOrbOverride', String(matrixOrbOverride));
+      } else {
+        localStorage.removeItem('app_matrixOrbOverride');
+      }
+    } catch (e) {}
+  }, [activeTab, computedParams, activePresetName, focusDate, matrixOrbOverride]);
 
   // Check if pending inputs differ from active computed parameters
   const isDirty = useMemo(() => {

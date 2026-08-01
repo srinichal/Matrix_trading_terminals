@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { MatrixData, DepartureEvent } from '../types';
 import { scanCriticalDates } from '../lib/matrix';
 import { ASPECT_META, PLANET_META } from '../lib/astronomy';
@@ -24,7 +24,19 @@ export const CriticalDatesTab: React.FC<CriticalDatesTabProps> = ({
   orb,
   minHighlight
 }) => {
-  const [filterTier, setFilterTier] = useState<string>('all');
+  const [filterTier, setFilterTier] = useState<string>(() => {
+    try {
+      return localStorage.getItem('cdt_filterTier') || 'all';
+    } catch (e) {
+      return 'all';
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('cdt_filterTier', filterTier);
+    } catch (e) {}
+  }, [filterTier]);
 
   const events = scanCriticalDates(
     matrix,

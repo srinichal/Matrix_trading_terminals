@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { MatrixData, PlanetName } from '../types';
 import { FAST_BODIES, PLANET_META, ASPECT_META, daysSinceEpoch, sunGeocentric, computeLongitude, findAspectAll } from '../lib/astronomy';
 import { fromIso, iso, addDays, ringToDegree } from '../lib/matrix';
@@ -16,8 +16,28 @@ export const DepartureCalendarTab: React.FC<DepartureCalendarTabProps> = ({
   minHighlight,
   orb = 5.0
 }) => {
-  const [filterBody, setFilterBody] = useState<string>('all');
-  const [signalsOnly, setSignalsOnly] = useState<boolean>(false);
+  const [filterBody, setFilterBody] = useState<string>(() => {
+    try {
+      return localStorage.getItem('dct_filterBody') || 'all';
+    } catch (e) {
+      return 'all';
+    }
+  });
+  const [signalsOnly, setSignalsOnly] = useState<boolean>(() => {
+    try {
+      const v = localStorage.getItem('dct_signalsOnly');
+      return v !== null ? JSON.parse(v) : false;
+    } catch (e) {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('dct_filterBody', filterBody);
+      localStorage.setItem('dct_signalsOnly', JSON.stringify(signalsOnly));
+    } catch (e) {}
+  }, [filterBody, signalsOnly]);
 
   const { dates, data, ring_lo, ring_hi } = matrix;
   const nDays = dates.length;

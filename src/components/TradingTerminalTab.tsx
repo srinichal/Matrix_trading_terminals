@@ -76,7 +76,15 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
   minHighlight
 }) => {
   // Chart & Data state
-  const [timeframe, setTimeframe] = useState<TimeframeType>('30m');
+  const [timeframe, setTimeframe] = useState<TimeframeType>(() => {
+    try {
+      const saved = localStorage.getItem('tt_timeframe');
+      if (saved && ['minute', '3m', '5m', '15m', '30m', '60m', 'day'].includes(saved)) {
+        return saved as TimeframeType;
+      }
+    } catch (e) {}
+    return '30m';
+  });
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isLoadingOlder, setIsLoadingOlder] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -148,7 +156,9 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
     () => localStorage.getItem('tt_kiteInstrumentToken') || '256265'
   );
   const [kiteCustomUrl, setKiteCustomUrl] = useState<string>(
-    'https://kite.zerodha.com/oms/instruments/historical/{instrument_token}/{interval}?user_id=GW0461&oi=1&from={from}&to={to}'
+    () =>
+      localStorage.getItem('tt_kiteCustomUrl') ||
+      'https://kite.zerodha.com/oms/instruments/historical/{instrument_token}/{interval}?user_id=GW0461&oi=1&from={from}&to={to}'
   );
   const [showConfigPanel, setShowConfigPanel] = useState<boolean>(false);
 
@@ -173,6 +183,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
   // Persist toggles & configuration state to LocalStorage
   useEffect(() => {
     try {
+      localStorage.setItem('tt_timeframe', timeframe);
       localStorage.setItem('tt_showPermWalls', JSON.stringify(showPermWalls));
       localStorage.setItem('tt_showStrongWalls', JSON.stringify(showStrongWalls));
       localStorage.setItem('tt_showAstroSignals', JSON.stringify(showAstroSignals));
@@ -185,8 +196,10 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
       if (kiteAccessToken) localStorage.setItem('tt_kiteAccessToken', kiteAccessToken);
       if (kiteEnctoken) localStorage.setItem('tt_kiteEnctoken', kiteEnctoken);
       if (kiteInstrumentToken) localStorage.setItem('tt_kiteInstrumentToken', kiteInstrumentToken);
+      if (kiteCustomUrl) localStorage.setItem('tt_kiteCustomUrl', kiteCustomUrl);
     } catch (e) {}
   }, [
+    timeframe,
     showPermWalls,
     showStrongWalls,
     showAstroSignals,
@@ -198,7 +211,8 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
     kiteApiKey,
     kiteAccessToken,
     kiteEnctoken,
-    kiteInstrumentToken
+    kiteInstrumentToken,
+    kiteCustomUrl
   ]);
 
   // Active Candle Data

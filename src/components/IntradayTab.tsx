@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { PlanetName, AspectName, IntradayPPPoint } from '../types';
 import {
   getPositions, findAspectAll, findAspect, angDiff, fmtDeg, signOf, rev,
@@ -8,13 +8,64 @@ import { P_START, P_SCALE, RING_SIZE, ringToDegree, fromIso, iso } from '../lib/
 import { Target, RefreshCw, Layers, Sliders, ArrowUpDown } from 'lucide-react';
 
 export const IntradayTab: React.FC = () => {
-  const [intraDate, setIntraDate] = useState<string>(new Date().toISOString().slice(0, 10));
-  const [intraPrice, setIntraPrice] = useState<string>('24350');
-  const [intraOrb, setIntraOrb] = useState<number>(5);
-  const [intraRing, setIntraRing] = useState<number>(5);
-  const [useMinor, setUseMinor] = useState<boolean>(true);
-  const [minCount, setMinCount] = useState<number>(2);
-  const [ppSort, setPPSort] = useState<'strength' | 'point'>('strength');
+  const [intraDate, setIntraDate] = useState<string>(
+    () => localStorage.getItem('it_intraDate') || new Date().toISOString().slice(0, 10)
+  );
+  const [intraPrice, setIntraPrice] = useState<string>(
+    () => localStorage.getItem('it_intraPrice') || '24350'
+  );
+  const [intraOrb, setIntraOrb] = useState<number>(() => {
+    try {
+      const v = localStorage.getItem('it_intraOrb');
+      return v !== null ? Number(v) : 5;
+    } catch (e) {
+      return 5;
+    }
+  });
+  const [intraRing, setIntraRing] = useState<number>(() => {
+    try {
+      const v = localStorage.getItem('it_intraRing');
+      return v !== null ? Number(v) : 5;
+    } catch (e) {
+      return 5;
+    }
+  });
+  const [useMinor, setUseMinor] = useState<boolean>(() => {
+    try {
+      const v = localStorage.getItem('it_useMinor');
+      return v !== null ? JSON.parse(v) : true;
+    } catch (e) {
+      return true;
+    }
+  });
+  const [minCount, setMinCount] = useState<number>(() => {
+    try {
+      const v = localStorage.getItem('it_minCount');
+      return v !== null ? Number(v) : 2;
+    } catch (e) {
+      return 2;
+    }
+  });
+  const [ppSort, setPPSort] = useState<'strength' | 'point'>(() => {
+    try {
+      const v = localStorage.getItem('it_ppSort');
+      return v === 'point' ? 'point' : 'strength';
+    } catch (e) {
+      return 'strength';
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('it_intraDate', intraDate);
+      localStorage.setItem('it_intraPrice', intraPrice);
+      localStorage.setItem('it_intraOrb', String(intraOrb));
+      localStorage.setItem('it_intraRing', String(intraRing));
+      localStorage.setItem('it_useMinor', JSON.stringify(useMinor));
+      localStorage.setItem('it_minCount', String(minCount));
+      localStorage.setItem('it_ppSort', ppSort);
+    } catch (e) {}
+  }, [intraDate, intraPrice, intraOrb, intraRing, useMinor, minCount, ppSort]);
 
   const handlePriceChange = (valStr: string) => {
     setIntraPrice(valStr);
