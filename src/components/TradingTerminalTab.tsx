@@ -41,8 +41,10 @@ import {
   Calendar,
   Target
 } from 'lucide-react';
-import { MatrixData, DepartureEvent } from '../types';
-import { scanCriticalDates } from '../lib/matrix';
+import { MatrixData, DepartureEvent, PlanetName, AspectName } from '../types';
+import { scanCriticalDates, ringToDegree, fromIso } from '../lib/matrix';
+import { PLANET_META, ASPECT_META, BODY_LIST, getPositions, findAspectAll } from '../lib/astronomy';
+import { getSignal, TIER_META } from '../lib/signals';
 
 interface TradingTerminalTabProps {
   matrix: MatrixData;
@@ -218,6 +220,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
   // Active Candle Data
   const [candles, setCandles] = useState<OHLCCandle[]>([]);
   const [activeHoverCandle, setActiveHoverCandle] = useState<OHLCCandle | null>(null);
+  const [crosshairPoint, setCrosshairPoint] = useState<{ x: number; y: number } | null>(null);
 
   // Canvas Refs & Async Tracking
   const chartContainerRef = useRef<HTMLDivElement>(null);
@@ -439,6 +442,91 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
       strongWalls: strong.filter((r) => !perm.includes(r)).sort((a, b) => a - b)
     };
   }, [matrix, validDates, nDays, ringLo, ringHi, minHighlight]);
+
+  // Matrix Aspect calculations for Hovered Date & Price (matching closest Main/Strong Wall)
+  const hoverAstroInfo = useMemo(() => {
+    if (!activeHoverCandle) return null;
+
+    const dateStr = activeHoverCandle.timeStr.slice(0, 10);
+    const hoverPrice = activeHoverCandle.close;
+
+    // Find closest wall among Main Walls (permWalls) and Strong Walls (strongWalls)
+    const candidateWalls: Array<{ price: number; type: 'Main Wall' | 'Strong Wall' }> = [
+      ...permWalls.map((w) => ({ price: w, type: 'Main Wall' as const })),
+      ...strongWalls.map((w) => ({ price: w, type: 'Strong Wall' as const }))
+    ];
+
+    let closestWall: { price: number; type: 'Main Wall' | 'Strong Wall' | 'Ring Wall'; distance: number };
+
+    if (candidateWalls.length > 0) {
+      candidateWalls.sort((a, b) => {
+        const distA = Math.abs(a.price - hoverPrice);
+        const distB = Math.abs(b.price - hoverPrice);
+        if (distA !== distB) return distA - distB;
+        return a.type === 'Main Wall' ? -1 : 1;
+      });
+      const best = candidateWalls[0];
+      closestWall = {
+        price: best.price,
+        type: best.type,
+        distance: Math.abs(best.price - hoverPrice)
+      };
+    } else {
+      const hoverRing = Math.round(hoverPrice / 100);
+      closestWall = {
+        price: hoverRing * 100,
+        type: 'Ring Wall',
+        distance: Math.abs(hoverRing * 100 - hoverPrice)
+      };
+    }
+
+    const wallRing = Math.round(closestWall.price / 100);
+
+    // 1. Matrix Price Ring Aspect Hits for the closest Main/Strong Wall on hovered date
+    let wallAspectHits: Array<{ p: PlanetName; a: AspectName; o: number; retro?: boolean }> = [];
+    if (matrix.data[dateStr] && matrix.data[dateStr][wallRing]) {
+      wallAspectHits = matrix.data[dateStr][wallRing];
+    } else {
+      try {
+        const dObj = fromIso(dateStr);
+        const pos = getPositions(dObj);
+        const deg = ringToDegree(wallRing);
+        for (const [pName, pVal] of Object.entries(pos)) {
+          const asp = findAspectAll(pVal.lon, deg, orb);
+          if (asp) {
+            wallAspectHits.push({
+              p: pName as PlanetName,
+              a: asp.name,
+              o: +asp.orb.toFixed(2),
+              retro: pVal.retro
+            });
+          }
+        }
+      } catch (e) {}
+    }
+
+
+    // 3. Matrix Hits for this date across all rings
+    let matrixRingCount = 0;
+    let matrixHitCount = 0;
+    if (matrix.data[dateStr]) {
+      matrixRingCount = Object.keys(matrix.data[dateStr]).length;
+      for (const hits of Object.values(matrix.data[dateStr])) {
+        if (Array.isArray(hits)) {
+          matrixHitCount += hits.length;
+        }
+      }
+    }
+
+    return {
+      dateStr,
+      hoverPrice,
+      closestWall,
+      wallAspectHits,
+      matrixRingCount,
+      matrixHitCount
+    };
+  }, [activeHoverCandle, matrix, permWalls, strongWalls, orb]);
 
   // Extract Critical Astro Signals
   const rawAstroEvents = useMemo(() => {
@@ -668,6 +756,13 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
         const matched = candlesRef.current.find((c) => c.time === param.time);
         if (matched) {
           setActiveHoverCandle(matched);
+          if (param.point) {
+            setCrosshairPoint({ x: param.point.x, y: param.point.y });
+          }
+        }
+      } else {
+        if (!param.point) {
+          setCrosshairPoint(null);
         }
       }
     });
@@ -1257,53 +1352,105 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
 
       {/* Active Candle Hover Info Header Bar */}
       {displayCandle && (
-        <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3 flex flex-wrap items-center justify-between gap-4 font-mono text-xs shadow-lg">
-          <div className="flex items-center gap-2 text-slate-400">
-            <Clock className="w-3.5 h-3.5 text-amber-400" />
-            <span className="text-amber-200 font-bold">{displayCandle.timeStr}</span>
+        <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3 space-y-2 font-mono text-xs shadow-lg">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center gap-2 text-slate-400">
+              <Clock className="w-3.5 h-3.5 text-amber-400" />
+              <span className="text-amber-200 font-bold">{displayCandle.timeStr}</span>
+            </div>
+
+            <div className="flex items-center gap-4">
+              <div>
+                <span className="text-slate-500 text-[10px] uppercase block">Open</span>
+                <span className="text-slate-200 font-semibold">{displayCandle.open.toLocaleString()}</span>
+              </div>
+
+              <div>
+                <span className="text-slate-500 text-[10px] uppercase block">High</span>
+                <span className="text-emerald-400 font-semibold">{displayCandle.high.toLocaleString()}</span>
+              </div>
+
+              <div>
+                <span className="text-slate-500 text-[10px] uppercase block">Low</span>
+                <span className="text-rose-400 font-semibold">{displayCandle.low.toLocaleString()}</span>
+              </div>
+
+              <div>
+                <span className="text-slate-500 text-[10px] uppercase block">Close</span>
+                <span className={`font-bold ${displayCandle.close >= displayCandle.open ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  {displayCandle.close.toLocaleString()}
+                </span>
+              </div>
+
+              <div>
+                <span className="text-slate-500 text-[10px] uppercase block">Change</span>
+                <span className={`font-semibold ${displayCandle.close >= displayCandle.open ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  {(displayCandle.close - displayCandle.open >= 0 ? '+' : '')}
+                  {(displayCandle.close - displayCandle.open).toFixed(2)} (
+                  {(((displayCandle.close - displayCandle.open) / displayCandle.open) * 100).toFixed(2)}%)
+                </span>
+              </div>
+
+              <div>
+                <span className="text-slate-500 text-[10px] uppercase block">Volume</span>
+                <span className="text-sky-300">{displayCandle.volume.toLocaleString()}</span>
+              </div>
+            </div>
+
+            {lastFetchedInfo && (
+              <div className="text-[11px] text-teal-300/80 bg-teal-500/10 px-2 py-0.5 rounded border border-teal-500/20">
+                {lastFetchedInfo}
+              </div>
+            )}
           </div>
 
-          <div className="flex items-center gap-4">
-            <div>
-              <span className="text-slate-500 text-[10px] uppercase block">Open</span>
-              <span className="text-slate-200 font-semibold">{displayCandle.open.toLocaleString()}</span>
-            </div>
+          {/* Matrix Planet Aspects Row on Hover */}
+          {hoverAstroInfo && (
+            <div className="border-t border-slate-800 pt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-amber-400 font-bold flex items-center gap-1 uppercase text-[10px] tracking-wider">
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>
+                    PLANETS AT PRESSURE ({hoverAstroInfo.closestWall.type} @ {hoverAstroInfo.closestWall.price.toLocaleString()}):
+                  </span>
+                </span>
+                {hoverAstroInfo.wallAspectHits.length > 0 ? (
+                  hoverAstroInfo.wallAspectHits.map((hit, idx) => {
+                    const pMeta = PLANET_META[hit.p];
+                    const aspMeta = ASPECT_META[hit.a];
+                    const floorSig = getSignal(hit.p, hit.a, 'depart', 'floor');
+                    const ceilSig = getSignal(hit.p, hit.a, 'depart', 'ceiling');
+                    const bestSig = [floorSig, ceilSig].filter(Boolean).sort((a, b) => b!.lift - a!.lift)[0];
 
-            <div>
-              <span className="text-slate-500 text-[10px] uppercase block">High</span>
-              <span className="text-emerald-400 font-semibold">{displayCandle.high.toLocaleString()}</span>
-            </div>
-
-            <div>
-              <span className="text-slate-500 text-[10px] uppercase block">Low</span>
-              <span className="text-rose-400 font-semibold">{displayCandle.low.toLocaleString()}</span>
-            </div>
-
-            <div>
-              <span className="text-slate-500 text-[10px] uppercase block">Close</span>
-              <span className={`font-bold ${displayCandle.close >= displayCandle.open ? 'text-emerald-400' : 'text-rose-400'}`}>
-                {displayCandle.close.toLocaleString()}
-              </span>
-            </div>
-
-            <div>
-              <span className="text-slate-500 text-[10px] uppercase block">Change</span>
-              <span className={`font-semibold ${displayCandle.close >= displayCandle.open ? 'text-emerald-400' : 'text-rose-400'}`}>
-                {(displayCandle.close - displayCandle.open >= 0 ? '+' : '')}
-                {(displayCandle.close - displayCandle.open).toFixed(2)} (
-                {(((displayCandle.close - displayCandle.open) / displayCandle.open) * 100).toFixed(2)}%)
-              </span>
-            </div>
-
-            <div>
-              <span className="text-slate-500 text-[10px] uppercase block">Volume</span>
-              <span className="text-sky-300">{displayCandle.volume.toLocaleString()}</span>
-            </div>
-          </div>
-
-          {lastFetchedInfo && (
-            <div className="text-[11px] text-teal-300/80 bg-teal-500/10 px-2 py-0.5 rounded border border-teal-500/20">
-              {lastFetchedInfo}
+                    return (
+                      <div
+                        key={idx}
+                        className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-slate-950 border border-slate-800 font-mono text-[11px]"
+                      >
+                        <span className="w-2 h-2 rounded-full" style={{ backgroundColor: aspMeta?.color || '#888' }} />
+                        <span style={{ color: pMeta?.color || '#fff' }}>{pMeta?.sym}</span>
+                        <span className="text-slate-200 font-medium">{hit.p}</span>
+                        <span style={{ color: aspMeta?.color || '#ccc' }}>{aspMeta?.abbr || hit.a}</span>
+                        <span className="text-slate-500 text-[10px]">({hit.o}°)</span>
+                        {bestSig && (
+                          <span
+                            className="px-1.5 py-0.2 rounded text-[10px] font-bold ml-0.5"
+                            style={{
+                              backgroundColor: TIER_META[bestSig.tier].bg,
+                              color: TIER_META[bestSig.tier].color,
+                              border: `1px solid ${TIER_META[bestSig.tier].border}`
+                            }}
+                          >
+                            {TIER_META[bestSig.tier].icon} {bestSig.lift.toFixed(1)}×
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })
+                ) : (
+                  <span className="text-slate-500 italic text-[10px]">No planets at pressure at this wall level on {hoverAstroInfo.dateStr}</span>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -1315,6 +1462,90 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
           ref={chartContainerRef}
           className={`w-full ${isPopout ? 'h-[calc(100vh-250px)] min-h-[620px]' : 'h-[520px]'}`}
         />
+
+        {/* Floating Matrix Planet Aspects Tooltip on Hover */}
+        {hoverAstroInfo && (
+          <div
+            style={{
+              position: 'absolute',
+              top: crosshairPoint ? Math.max(12, Math.min(crosshairPoint.y - 40, 260)) : 12,
+              left: crosshairPoint ? Math.min(crosshairPoint.x + 20, (chartContainerRef.current?.clientWidth || 800) - 360) : 'auto',
+              right: crosshairPoint ? 'auto' : 12,
+            }}
+            className="z-30 bg-slate-950/95 border border-amber-500/40 backdrop-blur-xl rounded-xl p-3 shadow-2xl max-w-xs sm:max-w-md pointer-events-none transition-all duration-75 space-y-2.5 font-mono text-xs"
+          >
+            {/* Tooltip Header */}
+            <div className="flex items-center justify-between border-b border-slate-800 pb-1.5">
+              <div className="flex items-center gap-1.5 text-amber-300 font-bold">
+                <Sparkles className="w-4 h-4 text-amber-400 animate-pulse" />
+                <span>{hoverAstroInfo.closestWall.type}: {hoverAstroInfo.closestWall.price.toLocaleString()}</span>
+              </div>
+              <span className="text-[10px] text-amber-300 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/30 font-semibold">
+                {hoverAstroInfo.dateStr}
+              </span>
+            </div>
+
+            {/* Wall Distance / Hover Price info */}
+            <div className="text-[10px] text-slate-400 flex items-center justify-between">
+              <span>Price: <strong className="text-slate-200">{hoverAstroInfo.hoverPrice.toLocaleString()}</strong></span>
+              <span>Wall Gap: <strong className={hoverAstroInfo.closestWall.distance === 0 ? "text-emerald-400" : "text-amber-400"}>
+                {hoverAstroInfo.closestWall.distance === 0 ? "Exact Hit" : `±${hoverAstroInfo.closestWall.distance} pts`}
+              </strong></span>
+            </div>
+
+            {/* Planets at Pressure */}
+            <div className="space-y-1.5 pt-0.5">
+              <div className="text-[10px] uppercase font-bold text-amber-300 tracking-wider flex items-center justify-between">
+                <span>PLANETS AT PRESSURE</span>
+                <span className="text-amber-400 text-[9px] font-bold">{hoverAstroInfo.wallAspectHits.length} Hits</span>
+              </div>
+              {hoverAstroInfo.wallAspectHits.length > 0 ? (
+                <div className="flex flex-wrap gap-1.5 max-h-48 overflow-y-auto pr-1 no-scrollbar">
+                  {hoverAstroInfo.wallAspectHits.map((hit, idx) => {
+                    const pMeta = PLANET_META[hit.p];
+                    const aspMeta = ASPECT_META[hit.a];
+                    const floorSig = getSignal(hit.p, hit.a, 'depart', 'floor');
+                    const ceilSig = getSignal(hit.p, hit.a, 'depart', 'ceiling');
+                    const bestSig = [floorSig, ceilSig].filter(Boolean).sort((a, b) => b!.lift - a!.lift)[0];
+
+                    return (
+                      <div
+                        key={idx}
+                        className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800 font-mono text-[11px] shadow-sm"
+                      >
+                        <span className="w-2 h-2 rounded-full" style={{ backgroundColor: aspMeta?.color || '#888' }} />
+                        <span style={{ color: pMeta?.color || '#fff' }}>{pMeta?.sym}</span>
+                        <span className="text-slate-200 font-medium">{hit.p}</span>
+                        <span style={{ color: aspMeta?.color || '#ccc' }}>{aspMeta?.abbr || hit.a}</span>
+                        <span className="text-slate-500 text-[10px]">({hit.o}°)</span>
+                        {bestSig && (
+                          <span
+                            className="px-1.5 py-0.5 rounded text-[10px] font-bold ml-0.5"
+                            style={{
+                              backgroundColor: TIER_META[bestSig.tier].bg,
+                              color: TIER_META[bestSig.tier].color,
+                              border: `1px solid ${TIER_META[bestSig.tier].border}`
+                            }}
+                          >
+                            {TIER_META[bestSig.tier].icon} {bestSig.lift.toFixed(1)}×
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="text-[11px] text-slate-500 italic py-1">No planets at pressure at this wall level on {hoverAstroInfo.dateStr}</div>
+              )}
+            </div>
+
+            {/* Matrix Day Summary */}
+            <div className="border-t border-slate-800/80 pt-1.5 text-[10px] text-slate-400 flex items-center justify-between">
+              <span>Matrix Active Rings: <strong className="text-amber-300">{hoverAstroInfo.matrixRingCount}</strong></span>
+              <span>Total Alignments: <strong className="text-amber-300">{hoverAstroInfo.matrixHitCount}</strong></span>
+            </div>
+          </div>
+        )}
 
         {/* Loading Older History Badge */}
         {isLoadingOlder && (
