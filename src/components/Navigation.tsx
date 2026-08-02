@@ -1,7 +1,7 @@
 import React from 'react';
-import { LayoutDashboard, Grid3X3, CalendarCheck2, CalendarDays, Box, Target, CandlestickChart } from 'lucide-react';
+import { LayoutDashboard, Grid3X3, CalendarCheck2, CalendarDays, Box, Target, CandlestickChart, CalendarRange } from 'lucide-react';
 
-export type TabType = 'overview' | 'matrix' | 'dates' | 'calendar' | 'boxes' | 'intraday' | 'terminal';
+export type TabType = 'overview' | 'matrix' | 'dates' | 'calendar' | 'boxes' | 'boxingdates' | 'intraday' | 'terminal';
 
 interface NavigationProps {
   activeTab: TabType;
@@ -23,6 +23,7 @@ export const Navigation: React.FC<NavigationProps> = ({
     { id: 'dates', label: 'Critical Dates', icon: CalendarCheck2, badge: datesBadgeCount },
     { id: 'calendar', label: 'Departure Calendar', icon: CalendarDays },
     { id: 'boxes', label: 'Box Breakouts', icon: Box, badge: boxesBadgeCount },
+    { id: 'boxingdates', label: 'Boxing Dates', icon: CalendarRange },
     { id: 'intraday', label: 'Intraday Levels', icon: Target }
   ];
 

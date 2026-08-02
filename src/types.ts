@@ -114,6 +114,17 @@ export interface IntradayPPPoint {
   strength: number;
 }
 
+export interface BoxingDate {
+  date: string;
+  kind: 'perm' | 'strong';
+  perm: number[];
+  strong: number[];
+  isWeekend?: boolean;
+  snappedFrom?: string;
+}
+
+export type BoxingDatesResult = BoxingDate[];
+
 export interface MarketPreset {
   name: string;
   symbol: string;

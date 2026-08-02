@@ -7,6 +7,7 @@ import { MatrixTab } from './components/MatrixTab';
 import { CriticalDatesTab } from './components/CriticalDatesTab';
 import { DepartureCalendarTab } from './components/DepartureCalendarTab';
 import { BoxBreakoutsTab } from './components/BoxBreakoutsTab';
+import { BoxingDatesTab } from './components/BoxingDatesTab';
 import { IntradayTab } from './components/IntradayTab';
 import { TradingTerminalTab } from './components/TradingTerminalTab';
 import { SignalsCatalogModal } from './components/SignalsCatalogModal';
@@ -72,7 +73,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<TabType>(() => {
     try {
       const saved = localStorage.getItem('app_activeTab');
-      if (saved && ['terminal', 'overview', 'matrix', 'dates', 'calendar', 'boxes', 'intraday'].includes(saved)) {
+      if (saved && ['terminal', 'overview', 'matrix', 'dates', 'calendar', 'boxes', 'boxingdates', 'intraday'].includes(saved)) {
         return saved as TabType;
       }
     } catch (e) {}
@@ -359,6 +360,18 @@ export default function App() {
 
           {activeTab === 'boxes' && (
             <BoxBreakoutsTab
+              matrix={matrix}
+              dateFrom={computedParams.dateFrom}
+              dateTo={computedParams.dateTo}
+              priceLo={computedParams.priceLo}
+              priceHi={computedParams.priceHi}
+              orb={computedParams.orb}
+              minHighlight={computedParams.minHighlight}
+            />
+          )}
+
+          {activeTab === 'boxingdates' && (
+            <BoxingDatesTab
               matrix={matrix}
               dateFrom={computedParams.dateFrom}
               dateTo={computedParams.dateTo}

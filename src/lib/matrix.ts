@@ -1,6 +1,6 @@
 import {
   PlanetName, AspectName, MatrixData, DayMatrix, DepartureProjection,
-  DepartureEvent, BoxBreakoutData, BoxLevel, IntradayPPPoint
+  DepartureEvent, BoxBreakoutData, BoxLevel, IntradayPPPoint, BoxingDate
 } from '../types';
 import {
   getPositions, findAspect, findAspectAll, angDiff, daysSinceEpoch,
@@ -441,3 +441,128 @@ export function computeBoxBreakouts(
     };
   });
 }
+
+export function getWallPricesFromMatrix(
+  matrix: MatrixData,
+  dateFrom: string,
+  dateTo: string,
+  priceLo: number,
+  priceHi: number,
+  minH: number
+): { permWalls: number[]; strongWalls: number[] } {
+  const ringLo = Math.floor(priceLo / 100);
+  const ringHi = Math.ceil(priceHi / 100);
+  const validDates = matrix.dates.filter((d) => d >= dateFrom && d <= dateTo);
+  const nDays = validDates.length || 1;
+
+  const permSet = new Set<number>();
+  const strongSet = new Set<number>();
+
+  for (let r = ringLo; r <= ringHi; r++) {
+    let hits = 0;
+    for (const d of validDates) {
+      if (matrix.data[d] && matrix.data[d][r] && matrix.data[d][r].length >= minH) hits++;
+    }
+    const pct = hits / nDays;
+    if (pct >= 0.90) permSet.add(r * 100);
+    else if (pct >= 0.50) strongSet.add(r * 100);
+  }
+
+  return {
+    permWalls: [...permSet].sort((a, b) => a - b),
+    strongWalls: [...strongSet].sort((a, b) => a - b)
+  };
+}
+
+export function computeBoxingDates(
+  anchorDate: string,
+  endDate: string,
+  permWalls: number[],
+  strongWalls: number[],
+  snapTradingDay: boolean = false
+): BoxingDate[] {
+  if (!anchorDate || !endDate) return [];
+
+  const startObj = fromIso(anchorDate);
+  const endObj = fromIso(endDate);
+  if (isNaN(startObj.getTime()) || isNaN(endObj.getTime()) || startObj > endObj) return [];
+
+  const CYCLE = 36;
+  const spanDays = Math.round((endObj.getTime() - startObj.getTime()) / (1000 * 60 * 60 * 24));
+  if (spanDays < 0) return [];
+
+  const dateMap: Record<
+    string,
+    { date: string; perm: number[]; strong: number[]; isWeekend?: boolean; snappedFrom?: string }
+  > = {};
+
+  const projectWall = (price: number, kind: 'perm' | 'strong') => {
+    const ring = Math.floor(price / 100);
+    const dayOffset = ((ring % CYCLE) + CYCLE) % CYCLE;
+
+    let k = 0;
+    while (true) {
+      const offsetDays = dayOffset + CYCLE * k;
+      if (offsetDays > spanDays) break;
+
+      const targetDate = addDays(startObj, offsetDays);
+      const origIso = iso(targetDate);
+      const dayOfWeek = targetDate.getUTCDay();
+      const isWknd = dayOfWeek === 0 || dayOfWeek === 6;
+
+      let actualIso = origIso;
+      let snappedFrom: string | undefined = undefined;
+
+      if (snapTradingDay && isWknd) {
+        const daysToAdd = dayOfWeek === 6 ? 2 : 1; // Sat -> Mon (+2), Sun -> Mon (+1)
+        const snappedDate = addDays(targetDate, daysToAdd);
+        actualIso = iso(snappedDate);
+        snappedFrom = origIso;
+      }
+
+      if (!dateMap[actualIso]) {
+        dateMap[actualIso] = {
+          date: actualIso,
+          perm: [],
+          strong: [],
+          isWeekend: isWknd,
+          snappedFrom
+        };
+      }
+
+      if (kind === 'perm') {
+        if (!dateMap[actualIso].perm.includes(price)) {
+          dateMap[actualIso].perm.push(price);
+        }
+      } else {
+        if (!dateMap[actualIso].strong.includes(price)) {
+          dateMap[actualIso].strong.push(price);
+        }
+      }
+
+      k++;
+    }
+  };
+
+  for (const price of strongWalls) {
+    projectWall(price, 'strong');
+  }
+
+  for (const price of permWalls) {
+    projectWall(price, 'perm');
+  }
+
+  const result: BoxingDate[] = Object.values(dateMap).map((entry) => ({
+    date: entry.date,
+    kind: entry.perm.length > 0 ? 'perm' : 'strong',
+    perm: entry.perm.sort((a, b) => a - b),
+    strong: entry.strong.sort((a, b) => a - b),
+    isWeekend: entry.isWeekend,
+    snappedFrom: entry.snappedFrom
+  }));
+
+  result.sort((a, b) => a.date.localeCompare(b.date));
+
+  return result;
+}
+
