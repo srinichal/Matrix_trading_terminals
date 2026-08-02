@@ -114,11 +114,21 @@ export interface IntradayPPPoint {
   strength: number;
 }
 
+export interface WallSyncDetail {
+  wallPrice: number;
+  wallRing: number;
+  kind: 'perm' | 'strong';
+  syncRings: number[];
+  syncPrices: number[];
+}
+
 export interface BoxingDate {
   date: string;
   kind: 'perm' | 'strong';
   perm: number[];
   strong: number[];
+  wallSyncs?: WallSyncDetail[];
+  syncPrices?: number[];
   isWeekend?: boolean;
   snappedFrom?: string;
 }

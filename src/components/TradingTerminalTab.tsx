@@ -1790,6 +1790,19 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
                       </span>
                     ))}
                   </div>
+                  {hoverAstroInfo.matchedBoxingDate.syncPrices && hoverAstroInfo.matchedBoxingDate.syncPrices.length > 0 && (
+                    <div className="text-[10px] text-slate-300 flex flex-wrap items-center gap-1 pt-0.5 border-t border-amber-500/20">
+                      <span className="text-amber-300 font-semibold">Sync Turn Targets:</span>
+                      {hoverAstroInfo.matchedBoxingDate.syncPrices.slice(0, 6).map((sp) => (
+                        <span key={sp} className="px-1 bg-amber-500/20 rounded border border-amber-500/30 font-mono text-amber-200 text-[9px] font-bold">
+                          {sp.toLocaleString()}
+                        </span>
+                      ))}
+                      {hoverAstroInfo.matchedBoxingDate.syncPrices.length > 6 && (
+                        <span className="text-[9px] text-slate-400">+{hoverAstroInfo.matchedBoxingDate.syncPrices.length - 6} more</span>
+                      )}
+                    </div>
+                  )}
                 </div>
               ) : hoverAstroInfo.nextBoxingDate ? (
                 <div className="text-[10px] text-slate-400 flex items-center justify-between">

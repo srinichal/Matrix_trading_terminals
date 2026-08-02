@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { MatrixData, BoxingDate, MatrixHit, SignalDef } from '../types';
-import { computeBoxingDates, getWallPricesFromMatrix, scanCriticalDates, fromIso, iso, addDays } from '../lib/matrix';
+import { computeBoxingDates, getWallPricesFromMatrix, scanCriticalDates, fromIso, iso, addDays, SYNC_RING_OFFSETS, computeSyncPricesForWall } from '../lib/matrix';
 import { PLANET_META, ASPECT_META } from '../lib/astronomy';
 import { getSignal, TIER_META, SIGNALS } from '../lib/signals';
 import {
@@ -21,7 +21,9 @@ import {
   Layers,
   ArrowRight,
   Award,
-  Zap
+  Zap,
+  Target,
+  Box
 } from 'lucide-react';
 
 interface BoxingDatesTabProps {
@@ -327,7 +329,7 @@ export const BoxingDatesTab: React.FC<BoxingDatesTabProps> = ({
               <X className="w-4 h-4" />
             </button>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-slate-300">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-slate-300">
             <div className="p-2.5 rounded bg-slate-900 border border-slate-800 space-y-1">
               <span className="text-amber-400 font-bold text-[11px] uppercase">1. Price Ring</span>
               <p className="text-[11px] text-slate-400">
@@ -348,6 +350,18 @@ export const BoxingDatesTab: React.FC<BoxingDatesTabProps> = ({
                 <code className="text-amber-200">Date = Anchor + (dayOffset + 36 × k) days</code>
               </p>
               <p className="text-[10px] text-slate-500">Projects forward in 36-day cycle increments (k = 0, 1, 2...) across the window.</p>
+            </div>
+            <div className="p-2.5 rounded bg-slate-900 border border-amber-500/30 space-y-1">
+              <span className="text-amber-300 font-bold text-[11px] uppercase flex items-center gap-1">
+                <Target className="w-3.5 h-3.5 text-amber-400" />
+                4. 6-Sync Turn Prices
+              </span>
+              <p className="text-[11px] text-slate-400">
+                <code className="text-amber-200">ring ± [12, 9, 0, 9, 12, 18]</code>
+              </p>
+              <p className="text-[10px] text-slate-500">
+                Gann aspect offsets (-120°, -90°, 0°, +90°, +120°, 180°). Touches on boxing date trigger price-time turns.
+              </p>
             </div>
           </div>
           <div className="text-[11px] text-slate-400 bg-slate-900/60 p-2.5 rounded border border-slate-800 flex items-center justify-between">
@@ -751,6 +765,29 @@ export const BoxingDatesTab: React.FC<BoxingDatesTabProps> = ({
                           </div>
                         </div>
 
+                        {/* Sync Turn Targets Summary Row */}
+                        <div className="space-y-1 pt-1 border-t border-slate-800/60">
+                          <div className="text-[10px] uppercase tracking-wider text-amber-300 font-bold flex items-center justify-between">
+                            <span className="flex items-center gap-1">
+                              <Target className="w-3 h-3 text-amber-400" />
+                              Sync Turn Targets
+                            </span>
+                            <span className="text-[9px] text-slate-400 font-normal">{(bd.syncPrices || []).length} levels</span>
+                          </div>
+                          <div className="flex flex-wrap gap-1 max-h-16 overflow-y-auto no-scrollbar">
+                            {(bd.syncPrices || []).slice(0, 6).map((sp) => (
+                              <span key={sp} className="px-1.5 py-0.2 rounded bg-slate-950 border border-amber-500/30 text-amber-300 text-[10px] font-bold">
+                                {sp.toLocaleString()}
+                              </span>
+                            ))}
+                            {(bd.syncPrices || []).length > 6 && (
+                              <span className="text-[9px] text-slate-500 self-center">
+                                +{(bd.syncPrices || []).length - 6} more
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
                         {/* Footer click prompt */}
                         <div className="pt-2 border-t border-slate-800/60 flex items-center justify-between text-[10px] text-slate-500 hover:text-amber-300">
                           <span>Inspect planetary matrix & signals</span>
@@ -1021,6 +1058,57 @@ export const BoxingDatesTab: React.FC<BoxingDatesTabProps> = ({
                     </div>
                   );
                 })}
+              </div>
+            </div>
+
+            {/* 6 Price-Time Sync Targets Breakdown */}
+            <div className="space-y-3 border-t border-slate-800 pt-3">
+              <h4 className="text-xs uppercase font-bold text-amber-300 tracking-wider flex items-center gap-2">
+                <Target className="w-4 h-4 text-amber-400" />
+                Price-Time Turn Sync Targets (Ring Offsets: -12, -9, 0, +9, +12, +18)
+              </h4>
+
+              <div className="space-y-3 max-h-72 overflow-y-auto no-scrollbar pr-1">
+                {(selectedDate.wallSyncs || [
+                  ...selectedDate.perm.map((p) => computeSyncPricesForWall(p, 'perm')),
+                  ...selectedDate.strong.map((p) => computeSyncPricesForWall(p, 'strong'))
+                ]).map((ws) => (
+                  <div key={`sync-${ws.wallPrice}`} className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-2 font-mono">
+                    <div className="flex items-center justify-between text-xs border-b border-slate-800/80 pb-1.5">
+                      <span className="font-bold text-amber-300 flex items-center gap-2">
+                        <span>Wall Price: <strong>{ws.wallPrice.toLocaleString()}</strong></span>
+                        <span className="text-slate-400 font-normal">(Ring {ws.wallRing})</span>
+                      </span>
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${ws.kind === 'perm' ? 'bg-amber-400 text-slate-950' : 'bg-teal-500/20 text-teal-300'}`}>
+                        {ws.kind === 'perm' ? '🥇 PERM WALL' : 'STRONG LEVEL'}
+                      </span>
+                    </div>
+
+                    {/* 6 Sync Price Cards Grid */}
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-1.5 pt-1">
+                      {SYNC_RING_OFFSETS.map((so, idx) => {
+                        const syncRing = ws.syncRings[idx];
+                        const syncPrice = ws.syncPrices[idx];
+                        const isConjunction = so.offset === 0;
+
+                        return (
+                          <div
+                            key={so.offset}
+                            className={`p-2 rounded border text-center transition-all ${
+                              isConjunction
+                                ? 'bg-amber-500/20 border-amber-500/50 text-amber-200 ring-1 ring-amber-400/30'
+                                : 'bg-slate-900 border-slate-800 text-slate-300 hover:border-slate-700'
+                            }`}
+                          >
+                            <div className="text-[9px] text-amber-400 font-semibold uppercase">{so.label}</div>
+                            <div className="text-xs font-bold text-amber-300 mt-0.5">{syncPrice.toLocaleString()}</div>
+                            <div className="text-[9px] text-slate-500">Ring {syncRing}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
 

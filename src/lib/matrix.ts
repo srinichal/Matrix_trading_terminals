@@ -1,6 +1,6 @@
 import {
   PlanetName, AspectName, MatrixData, DayMatrix, DepartureProjection,
-  DepartureEvent, BoxBreakoutData, BoxLevel, IntradayPPPoint, BoxingDate
+  DepartureEvent, BoxBreakoutData, BoxLevel, IntradayPPPoint, BoxingDate, WallSyncDetail
 } from '../types';
 import {
   getPositions, findAspect, findAspectAll, angDiff, daysSinceEpoch,
@@ -474,6 +474,29 @@ export function getWallPricesFromMatrix(
   };
 }
 
+export const SYNC_RING_OFFSETS = [
+  { offset: -12, angle: -120, label: 'Trine (-120°)', abbr: '-120°' },
+  { offset: -9, angle: -90, label: 'Square (-90°)', abbr: '-90°' },
+  { offset: 0, angle: 0, label: 'Conjunction (0°)', abbr: '0°' },
+  { offset: 9, angle: 90, label: 'Square (+90°)', abbr: '+90°' },
+  { offset: 12, angle: 120, label: 'Trine (+120°)', abbr: '+120°' },
+  { offset: 18, angle: 180, label: 'Opposition (180°)', abbr: '180°' }
+] as const;
+
+export function computeSyncPricesForWall(wallPrice: number, kind: 'perm' | 'strong' = 'perm'): WallSyncDetail {
+  const wallRing = Math.floor(wallPrice / 100);
+  const syncRings = SYNC_RING_OFFSETS.map((item) => wallRing + item.offset);
+  const syncPrices = syncRings.map((r) => r * 100);
+
+  return {
+    wallPrice,
+    wallRing,
+    kind,
+    syncRings,
+    syncPrices
+  };
+}
+
 export function computeBoxingDates(
   anchorDate: string,
   endDate: string,
@@ -552,14 +575,30 @@ export function computeBoxingDates(
     projectWall(price, 'perm');
   }
 
-  const result: BoxingDate[] = Object.values(dateMap).map((entry) => ({
-    date: entry.date,
-    kind: entry.perm.length > 0 ? 'perm' : 'strong',
-    perm: entry.perm.sort((a, b) => a - b),
-    strong: entry.strong.sort((a, b) => a - b),
-    isWeekend: entry.isWeekend,
-    snappedFrom: entry.snappedFrom
-  }));
+  const result: BoxingDate[] = Object.values(dateMap).map((entry) => {
+    const permSorted = entry.perm.sort((a, b) => a - b);
+    const strongSorted = entry.strong.sort((a, b) => a - b);
+
+    const wallSyncs: WallSyncDetail[] = [
+      ...permSorted.map((p) => computeSyncPricesForWall(p, 'perm')),
+      ...strongSorted.map((p) => computeSyncPricesForWall(p, 'strong'))
+    ];
+
+    const syncPricesSet = new Set<number>();
+    wallSyncs.forEach((ws) => ws.syncPrices.forEach((sp) => syncPricesSet.add(sp)));
+    const syncPrices = Array.from(syncPricesSet).sort((a, b) => a - b);
+
+    return {
+      date: entry.date,
+      kind: entry.perm.length > 0 ? 'perm' : 'strong',
+      perm: permSorted,
+      strong: strongSorted,
+      wallSyncs,
+      syncPrices,
+      isWeekend: entry.isWeekend,
+      snappedFrom: entry.snappedFrom
+    };
+  });
 
   result.sort((a, b) => a.date.localeCompare(b.date));
 
