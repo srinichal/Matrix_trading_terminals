@@ -1,27 +1,23 @@
 import React from 'react';
-import { LayoutDashboard, Grid3X3, CalendarCheck2, CalendarDays, Box, Target, CandlestickChart, CalendarRange } from 'lucide-react';
+import { LayoutDashboard, Grid3X3, Box, Target, CandlestickChart, CalendarRange } from 'lucide-react';
 
-export type TabType = 'overview' | 'matrix' | 'dates' | 'calendar' | 'boxes' | 'boxingdates' | 'intraday' | 'terminal';
+export type TabType = 'overview' | 'matrix' | 'boxes' | 'boxingdates' | 'intraday' | 'terminal';
 
 interface NavigationProps {
   activeTab: TabType;
   onTabChange: (tab: TabType) => void;
-  datesBadgeCount: number;
   boxesBadgeCount: number;
 }
 
 export const Navigation: React.FC<NavigationProps> = ({
   activeTab,
   onTabChange,
-  datesBadgeCount,
   boxesBadgeCount
 }) => {
   const TABS: { id: TabType; label: string; icon: React.FC<{ className?: string }>; badge?: number }[] = [
     { id: 'overview', label: 'Overview', icon: LayoutDashboard },
     { id: 'terminal', label: 'Trading Terminal', icon: CandlestickChart },
     { id: 'matrix', label: 'Matrix', icon: Grid3X3 },
-    { id: 'dates', label: 'Critical Dates', icon: CalendarCheck2, badge: datesBadgeCount },
-    { id: 'calendar', label: 'Departure Calendar', icon: CalendarDays },
     { id: 'boxes', label: 'Box Breakouts', icon: Box, badge: boxesBadgeCount },
     { id: 'boxingdates', label: 'Boxing Dates', icon: CalendarRange },
     { id: 'intraday', label: 'Intraday Levels', icon: Target }

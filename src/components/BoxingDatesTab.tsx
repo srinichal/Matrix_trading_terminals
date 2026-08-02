@@ -1,7 +1,8 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { MatrixData, BoxingDate, MatrixHit } from '../types';
-import { computeBoxingDates, getWallPricesFromMatrix, fromIso, iso, addDays } from '../lib/matrix';
+import { MatrixData, BoxingDate, MatrixHit, SignalDef } from '../types';
+import { computeBoxingDates, getWallPricesFromMatrix, scanCriticalDates, fromIso, iso, addDays } from '../lib/matrix';
 import { PLANET_META, ASPECT_META } from '../lib/astronomy';
+import { getSignal, TIER_META, SIGNALS } from '../lib/signals';
 import {
   CalendarDays,
   CalendarRange,
@@ -18,7 +19,9 @@ import {
   ShieldAlert,
   X,
   Layers,
-  ArrowRight
+  ArrowRight,
+  Award,
+  Zap
 } from 'lucide-react';
 
 interface BoxingDatesTabProps {
@@ -57,9 +60,25 @@ export const BoxingDatesTab: React.FC<BoxingDatesTabProps> = ({
     }
   });
 
+  const [monthFilter, setMonthFilter] = useState<string>(() => {
+    try {
+      return localStorage.getItem('bd_monthFilter') || 'all';
+    } catch (e) {
+      return 'all';
+    }
+  });
+
   const [kindFilter, setKindFilter] = useState<'all' | 'perm' | 'strong'>(() => {
     try {
       return (localStorage.getItem('bd_kindFilter') as 'all' | 'perm' | 'strong') || 'all';
+    } catch (e) {
+      return 'all';
+    }
+  });
+
+  const [signalFilter, setSignalFilter] = useState<'all' | 'sig' | 'gold' | 'silver' | 'bronze'>(() => {
+    try {
+      return (localStorage.getItem('bd_signalFilter') as 'all' | 'sig' | 'gold' | 'silver' | 'bronze') || 'all';
     } catch (e) {
       return 'all';
     }
@@ -77,46 +96,142 @@ export const BoxingDatesTab: React.FC<BoxingDatesTabProps> = ({
   const [showMathExplainer, setShowMathExplainer] = useState<boolean>(false);
   const [selectedDate, setSelectedDate] = useState<BoxingDate | null>(null);
 
-  // Sync anchorDate if dateFrom changes and anchor was default
+  // Sync state to LocalStorage
   useEffect(() => {
     try {
       localStorage.setItem('bd_anchorDate', anchorDate);
       localStorage.setItem('bd_snapTradingDay', String(snapTradingDay));
+      localStorage.setItem('bd_monthFilter', monthFilter);
       localStorage.setItem('bd_kindFilter', kindFilter);
+      localStorage.setItem('bd_signalFilter', signalFilter);
       localStorage.setItem('bd_viewMode', viewMode);
     } catch (e) {}
-  }, [anchorDate, snapTradingDay, kindFilter, viewMode]);
+  }, [anchorDate, snapTradingDay, monthFilter, kindFilter, signalFilter, viewMode]);
 
   // Extract wall prices from current matrix
   const { permWalls, strongWalls } = useMemo(() => {
     return getWallPricesFromMatrix(matrix, dateFrom, dateTo, priceLo, priceHi, minHighlight);
   }, [matrix, dateFrom, dateTo, priceLo, priceHi, minHighlight]);
 
+  // Compute 42 Signals Critical Events
+  const criticalEvents = useMemo(() => {
+    return scanCriticalDates(
+      matrix,
+      dateFrom,
+      dateTo,
+      priceLo,
+      priceHi,
+      orb,
+      minHighlight
+    );
+  }, [matrix, dateFrom, dateTo, priceLo, priceHi, orb, minHighlight]);
+
   // Compute Boxing Dates
   const allBoxingDates = useMemo(() => {
     return computeBoxingDates(anchorDate, dateTo, permWalls, strongWalls, snapTradingDay);
   }, [anchorDate, dateTo, permWalls, strongWalls, snapTradingDay]);
 
+  // Map 42 Signal Catalog Matches for each Boxing Date
+  const signalsByDateMap = useMemo(() => {
+    const map: Record<string, SignalDef[]> = {};
+
+    allBoxingDates.forEach((bd) => {
+      const matched: SignalDef[] = [];
+      const keysSet = new Set<string>();
+
+      const targetDates = [bd.date];
+      if (bd.snappedFrom && bd.snappedFrom !== bd.date) {
+        targetDates.push(bd.snappedFrom);
+      }
+
+      targetDates.forEach((d) => {
+        // 1. Critical departure/arrival events on this date
+        criticalEvents.forEach((ev) => {
+          if (ev.date === d && ev.sig && !keysSet.has(ev.sig.key)) {
+            keysSet.add(ev.sig.key);
+            matched.push(ev.sig);
+          }
+        });
+
+        // 2. Active matrix hits on bd's wall prices on this date
+        const dayData = matrix.data[d];
+        if (dayData) {
+          const allWalls = [...bd.perm, ...bd.strong];
+          allWalls.forEach((price) => {
+            const ring = Math.floor(price / 100);
+            const hits = dayData[ring] as MatrixHit[] | undefined;
+            if (hits) {
+              hits.forEach((hit) => {
+                const sig =
+                  getSignal(hit.p, hit.a, 'arrive', 'floor') ||
+                  getSignal(hit.p, hit.a, 'arrive', 'ceiling') ||
+                  getSignal(hit.p, hit.a, 'depart', 'floor') ||
+                  getSignal(hit.p, hit.a, 'depart', 'ceiling');
+                if (sig && !keysSet.has(sig.key)) {
+                  keysSet.add(sig.key);
+                  matched.push(sig);
+                }
+              });
+            }
+          });
+        }
+      });
+
+      const TIER_ORDER: Record<string, number> = { gold: 0, silver: 1, bronze: 2 };
+      matched.sort((a, b) => {
+        if (TIER_ORDER[a.tier] !== TIER_ORDER[b.tier]) {
+          return TIER_ORDER[a.tier] - TIER_ORDER[b.tier];
+        }
+        return b.lift - a.lift;
+      });
+
+      map[bd.date] = matched;
+    });
+
+    return map;
+  }, [allBoxingDates, criticalEvents, matrix]);
+
+  // Available Unique Months for Filtering
+  const availableMonths = useMemo(() => {
+    const monthsSet = new Set<string>();
+    allBoxingDates.forEach((bd) => {
+      if (bd.date && bd.date.length >= 7) {
+        monthsSet.add(bd.date.slice(0, 7));
+      }
+    });
+    return Array.from(monthsSet).sort();
+  }, [allBoxingDates]);
+
   // Filtered Boxing Dates
   const filteredBoxingDates = useMemo(() => {
     return allBoxingDates.filter((bd) => {
+      if (monthFilter !== 'all' && !bd.date.startsWith(monthFilter)) return false;
       if (kindFilter === 'perm' && bd.kind !== 'perm') return false;
       if (kindFilter === 'strong' && bd.kind !== 'strong') return false;
+
+      const sigs = signalsByDateMap[bd.date] || [];
+      if (signalFilter === 'sig' && sigs.length === 0) return false;
+      if (signalFilter === 'gold' && !sigs.some((s) => s.tier === 'gold')) return false;
+      if (signalFilter === 'silver' && !sigs.some((s) => s.tier === 'silver')) return false;
+      if (signalFilter === 'bronze' && !sigs.some((s) => s.tier === 'bronze')) return false;
+
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase().trim();
         const matchesDate = bd.date.toLowerCase().includes(q);
         const matchesPerm = bd.perm.some((p) => p.toString().includes(q));
         const matchesStrong = bd.strong.some((p) => p.toString().includes(q));
-        if (!matchesDate && !matchesPerm && !matchesStrong) return false;
+        const matchesSignal = sigs.some((s) => s.desc.toLowerCase().includes(q) || s.tier.includes(q));
+        if (!matchesDate && !matchesPerm && !matchesStrong && !matchesSignal) return false;
       }
       return true;
     });
-  }, [allBoxingDates, kindFilter, searchQuery]);
+  }, [allBoxingDates, monthFilter, kindFilter, signalFilter, searchQuery, signalsByDateMap]);
 
   // Stats
   const totalPermDates = useMemo(() => allBoxingDates.filter((d) => d.kind === 'perm').length, [allBoxingDates]);
   const totalStrongDates = useMemo(() => allBoxingDates.filter((d) => d.kind === 'strong').length, [allBoxingDates]);
-  const totalWeekendDates = useMemo(() => allBoxingDates.filter((d) => d.isWeekend).length, [allBoxingDates]);
+  const datesWithSignalsCount = useMemo(() => Object.values(signalsByDateMap).filter((sigs) => sigs.length > 0).length, [signalsByDateMap]);
+  const goldSignalsDatesCount = useMemo(() => Object.values(signalsByDateMap).filter((sigs) => sigs.some((s) => s.tier === 'gold')).length, [signalsByDateMap]);
 
   // Group by Month for Grid View
   const monthlyGroups = useMemo<Record<string, BoxingDate[]>>(() => {
@@ -193,8 +308,9 @@ export const BoxingDatesTab: React.FC<BoxingDatesTabProps> = ({
           <div className="bg-amber-500/10 border border-amber-500/20 text-amber-300 px-3 py-1.5 rounded-lg flex items-center gap-1.5 font-bold">
             <span>🥇 {totalPermDates} Permanent</span>
           </div>
-          <div className="bg-teal-500/10 border border-teal-500/20 text-teal-300 px-3 py-1.5 rounded-lg flex items-center gap-1.5 font-bold">
-            <span>╌ {totalStrongDates} Strong</span>
+          <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 px-3 py-1.5 rounded-lg flex items-center gap-1.5 font-bold">
+            <span>★ {datesWithSignalsCount} Signal Matches</span>
+            <span className="text-[10px] text-amber-400">({goldSignalsDatesCount} Gold)</span>
           </div>
         </div>
       </div>
@@ -325,6 +441,47 @@ export const BoxingDatesTab: React.FC<BoxingDatesTabProps> = ({
               <span>Snap Weekends to Monday</span>
             </label>
 
+            {/* Monthly Filter Dropdown */}
+            <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-lg border border-slate-800">
+              <span className="text-[10px] text-slate-500 px-1 font-bold flex items-center gap-1">
+                <CalendarDays className="w-3.5 h-3.5 text-amber-400" />
+                Month:
+              </span>
+              <select
+                value={monthFilter}
+                onChange={(e) => setMonthFilter(e.target.value)}
+                className="bg-slate-900 border border-slate-800 rounded px-2.5 py-1 text-xs text-amber-300 font-bold focus:outline-none focus:border-amber-400 cursor-pointer"
+              >
+                <option value="all">All Months ({availableMonths.length})</option>
+                {availableMonths.map((m) => {
+                  const [yr, mo] = m.split('-');
+                  const dateObj = new Date(parseInt(yr), parseInt(mo) - 1, 1);
+                  const label = dateObj.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+                  return (
+                    <option key={m} value={m}>
+                      📅 {label} ({m})
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+
+            {/* 42 Signals Filter Dropdown */}
+            <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-lg border border-slate-800">
+              <span className="text-[10px] text-slate-500 px-1 font-bold">Signal Filter:</span>
+              <select
+                value={signalFilter}
+                onChange={(e) => setSignalFilter(e.target.value as any)}
+                className="bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-amber-300 font-bold focus:outline-none focus:border-amber-400"
+              >
+                <option value="all">All Dates</option>
+                <option value="sig">★ 42 Catalog Signals Only</option>
+                <option value="gold">🥇 Gold Tier Signals</option>
+                <option value="silver">🥈 Silver Tier Signals</option>
+                <option value="bronze">🥉 Bronze Tier Signals</option>
+              </select>
+            </div>
+
             {/* Kind Filter */}
             <div className="flex items-center bg-slate-950 p-1 rounded-lg border border-slate-800">
               <button
@@ -335,7 +492,7 @@ export const BoxingDatesTab: React.FC<BoxingDatesTabProps> = ({
                     : 'text-slate-400 hover:text-slate-200'
                 }`}
               >
-                All
+                All Walls
               </button>
               <button
                 onClick={() => setKindFilter('perm')}
@@ -389,7 +546,7 @@ export const BoxingDatesTab: React.FC<BoxingDatesTabProps> = ({
             <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-2.5" />
             <input
               type="text"
-              placeholder="Search date or price (e.g. 2026-08, 24000)..."
+              placeholder="Search date, price or signal (e.g. Sun, 24000, Gold)..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full bg-slate-950 border border-slate-800 rounded-lg pl-9 pr-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-amber-400"
@@ -404,16 +561,34 @@ export const BoxingDatesTab: React.FC<BoxingDatesTabProps> = ({
             )}
           </div>
 
-          <div className="text-slate-400 text-xs">
-            Showing <b className="text-amber-300">{filteredBoxingDates.length}</b> of {allBoxingDates.length} projected dates
+          <div className="flex items-center gap-3 text-slate-400 text-xs">
+            {(monthFilter !== 'all' || kindFilter !== 'all' || signalFilter !== 'all' || searchQuery) && (
+              <button
+                onClick={() => {
+                  setMonthFilter('all');
+                  setKindFilter('all');
+                  setSignalFilter('all');
+                  setSearchQuery('');
+                }}
+                className="flex items-center gap-1 text-[11px] text-amber-400 bg-amber-500/10 hover:bg-amber-500/20 px-2 py-1 rounded border border-amber-500/30 transition-all font-mono"
+                title="Reset all filters"
+              >
+                <RotateCcw className="w-3 h-3" />
+                Reset Filters
+              </button>
+            )}
+            <div>
+              Showing <b className="text-amber-300">{filteredBoxingDates.length}</b> of {allBoxingDates.length} projected dates
+            </div>
           </div>
         </div>
       </div>
 
       {/* Main Content View */}
       {filteredBoxingDates.length === 0 ? (
-        <div className="text-xs font-mono text-slate-500 py-16 text-center bg-slate-900/50 border border-dashed border-slate-800 rounded-xl">
-          No boxing dates match the current filters or date range. Try clearing search or widening date selection.
+        <div className="text-xs font-mono text-slate-500 py-16 text-center bg-slate-900/50 border border-dashed border-slate-800 rounded-xl space-y-2">
+          <p>No boxing dates match the current filters or date range.</p>
+          <p className="text-[11px] text-slate-600">Try changing the signal filter or widening search terms.</p>
         </div>
       ) : viewMode === 'grid' ? (
         /* GRID / CARDS VIEW BY MONTH */
@@ -442,17 +617,33 @@ export const BoxingDatesTab: React.FC<BoxingDatesTabProps> = ({
                     const daysFromAnchor = getDaysFromAnchor(bd.date);
                     const dayOfWeek = getDayOfWeekStr(bd.date);
                     const totalWalls = bd.perm.length + bd.strong.length;
+                    const sigs = signalsByDateMap[bd.date] || [];
 
                     return (
                       <div
                         key={bd.date}
                         onClick={() => setSelectedDate(bd)}
-                        className={`p-3.5 rounded-xl border font-mono transition-all cursor-pointer hover:scale-[1.02] shadow-lg flex flex-col justify-between space-y-3 ${
-                          isPerm
+                        className={`p-3.5 rounded-xl border font-mono transition-all cursor-pointer hover:scale-[1.02] shadow-lg flex flex-col justify-between space-y-3 relative ${
+                          sigs.length > 0
+                            ? 'bg-slate-900 border-amber-400/80 shadow-amber-500/10 ring-1 ring-amber-400/20'
+                            : isPerm
                             ? 'bg-slate-900/90 border-amber-500/40 hover:border-amber-400 shadow-amber-500/5'
                             : 'bg-slate-900/70 border-teal-500/30 hover:border-teal-400'
                         }`}
                       >
+                        {/* Top Signal Ribbon if matches catalog */}
+                        {sigs.length > 0 && (
+                          <div className="flex items-center justify-between gap-1 pb-1.5 border-b border-slate-800">
+                            <span className="text-[10px] font-bold text-amber-300 flex items-center gap-1">
+                              <Sparkles className="w-3 h-3 text-amber-400" />
+                              42 Signal Catalog Match
+                            </span>
+                            <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-amber-400 text-slate-950">
+                              {sigs[0].lift.toFixed(1)}× Lift
+                            </span>
+                          </div>
+                        )}
+
                         {/* Card Header */}
                         <div>
                           <div className="flex items-start justify-between gap-2 border-b border-slate-800/80 pb-2">
@@ -491,6 +682,32 @@ export const BoxingDatesTab: React.FC<BoxingDatesTabProps> = ({
                             </div>
                           )}
                         </div>
+
+                        {/* 42 Signals Badges Block */}
+                        {sigs.length > 0 && (
+                          <div className="space-y-1">
+                            <div className="text-[10px] uppercase text-amber-300 font-bold">
+                              Matched Catalog Signals ({sigs.length}):
+                            </div>
+                            <div className="flex flex-wrap gap-1 max-h-20 overflow-y-auto no-scrollbar">
+                              {sigs.map((sig) => (
+                                <span
+                                  key={sig.key}
+                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold font-mono"
+                                  style={{
+                                    backgroundColor: TIER_META[sig.tier].bg,
+                                    color: TIER_META[sig.tier].color,
+                                    border: `1px solid ${TIER_META[sig.tier].border}`
+                                  }}
+                                  title={sig.desc}
+                                >
+                                  <span>{TIER_META[sig.tier].icon}</span>
+                                  <span>{sig.lift.toFixed(1)}× {sig.direction}</span>
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
 
                         {/* Wall Pills List */}
                         <div className="space-y-1.5 pt-1">
@@ -536,7 +753,7 @@ export const BoxingDatesTab: React.FC<BoxingDatesTabProps> = ({
 
                         {/* Footer click prompt */}
                         <div className="pt-2 border-t border-slate-800/60 flex items-center justify-between text-[10px] text-slate-500 hover:text-amber-300">
-                          <span>Inspect planetary matrix</span>
+                          <span>Inspect planetary matrix & signals</span>
                           <ChevronRight className="w-3 h-3" />
                         </div>
                       </div>
@@ -558,6 +775,7 @@ export const BoxingDatesTab: React.FC<BoxingDatesTabProps> = ({
                   <th className="p-3">Day</th>
                   <th className="p-3">Days from Anchor</th>
                   <th className="p-3">Significance</th>
+                  <th className="p-3">42 Signals Catalog Match</th>
                   <th className="p-3">Perm Walls (Gold)</th>
                   <th className="p-3">Strong Levels (Teal)</th>
                   <th className="p-3 text-right">Action</th>
@@ -568,6 +786,7 @@ export const BoxingDatesTab: React.FC<BoxingDatesTabProps> = ({
                   const isPerm = bd.kind === 'perm';
                   const daysFromAnchor = getDaysFromAnchor(bd.date);
                   const dayOfWeek = getDayOfWeekStr(bd.date);
+                  const sigs = signalsByDateMap[bd.date] || [];
 
                   return (
                     <tr
@@ -596,6 +815,27 @@ export const BoxingDatesTab: React.FC<BoxingDatesTabProps> = ({
                         >
                           {isPerm ? '🥇 Permanent' : '╌ Strong'}
                         </span>
+                      </td>
+                      <td className="p-3">
+                        {sigs.length > 0 ? (
+                          <div className="flex flex-wrap gap-1">
+                            {sigs.map((sig) => (
+                              <span
+                                key={sig.key}
+                                className="px-2 py-0.5 rounded text-[10px] font-bold"
+                                style={{
+                                  backgroundColor: TIER_META[sig.tier].bg,
+                                  color: TIER_META[sig.tier].color,
+                                  border: `1px solid ${TIER_META[sig.tier].border}`
+                                }}
+                              >
+                                {TIER_META[sig.tier].icon} {sig.lift.toFixed(1)}× {sig.direction}
+                              </span>
+                            ))}
+                          </div>
+                        ) : (
+                          <span className="text-slate-600">—</span>
+                        )}
                       </td>
                       <td className="p-3">
                         <div className="flex flex-wrap gap-1">
@@ -646,7 +886,7 @@ export const BoxingDatesTab: React.FC<BoxingDatesTabProps> = ({
       {/* Selected Boxing Date Detail Modal */}
       {selectedDate && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-fade-in">
-          <div className="bg-slate-900 border border-amber-500/40 rounded-2xl p-6 max-w-2xl w-full shadow-2xl space-y-5 font-mono text-xs">
+          <div className="bg-slate-900 border border-amber-500/40 rounded-2xl p-6 max-w-2xl w-full shadow-2xl space-y-5 font-mono text-xs max-h-[90vh] overflow-y-auto">
             {/* Modal Header */}
             <div className="flex items-start justify-between border-b border-slate-800 pb-3">
               <div>
@@ -676,6 +916,49 @@ export const BoxingDatesTab: React.FC<BoxingDatesTabProps> = ({
                 <X className="w-5 h-5" />
               </button>
             </div>
+
+            {/* 42 Signals Catalog Section in Modal */}
+            {(() => {
+              const modalSigs = signalsByDateMap[selectedDate.date] || [];
+              if (modalSigs.length === 0) return null;
+
+              return (
+                <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 space-y-2.5">
+                  <h4 className="text-xs uppercase font-bold text-amber-300 tracking-wider flex items-center gap-2">
+                    <Award className="w-4 h-4 text-amber-400" />
+                    Matched 42-Signal Catalog Patterns ({modalSigs.length})
+                  </h4>
+                  <div className="space-y-2">
+                    {modalSigs.map((sig) => (
+                      <div
+                        key={sig.key}
+                        className="p-2.5 rounded-lg bg-slate-950 border flex items-center justify-between"
+                        style={{ borderColor: TIER_META[sig.tier].border }}
+                      >
+                        <div>
+                          <div className="font-bold text-slate-100 flex items-center gap-2 text-xs">
+                            <span>{sig.desc}</span>
+                          </div>
+                          <div className="text-[10px] text-slate-400 mt-0.5">
+                            Sample: {sig.nM} episodes · p-value: {sig.p} · CI: [{sig.ci[0]}, {sig.ci[1]}]
+                          </div>
+                        </div>
+                        <span
+                          className="px-2.5 py-1 rounded text-xs font-bold whitespace-nowrap"
+                          style={{
+                            backgroundColor: TIER_META[sig.tier].bg,
+                            color: TIER_META[sig.tier].color,
+                            border: `1px solid ${TIER_META[sig.tier].border}`
+                          }}
+                        >
+                          {TIER_META[sig.tier].icon} {sig.tier.toUpperCase()} {sig.lift.toFixed(2)}×
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Contributing Walls Detailed Breakdown */}
             <div className="space-y-3">

@@ -4,8 +4,6 @@ import { ControlsBar } from './components/ControlsBar';
 import { Navigation, TabType } from './components/Navigation';
 import { OverviewTab } from './components/OverviewTab';
 import { MatrixTab } from './components/MatrixTab';
-import { CriticalDatesTab } from './components/CriticalDatesTab';
-import { DepartureCalendarTab } from './components/DepartureCalendarTab';
 import { BoxBreakoutsTab } from './components/BoxBreakoutsTab';
 import { BoxingDatesTab } from './components/BoxingDatesTab';
 import { IntradayTab } from './components/IntradayTab';
@@ -73,11 +71,11 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<TabType>(() => {
     try {
       const saved = localStorage.getItem('app_activeTab');
-      if (saved && ['terminal', 'overview', 'matrix', 'dates', 'calendar', 'boxes', 'boxingdates', 'intraday'].includes(saved)) {
+      if (saved && ['terminal', 'overview', 'matrix', 'boxes', 'boxingdates', 'intraday'].includes(saved)) {
         return saved as TabType;
       }
     } catch (e) {}
-    return 'terminal';
+    return 'boxingdates';
   });
 
   const [focusDate, setFocusDate] = useState<string>(() => {
@@ -292,7 +290,6 @@ export default function App() {
         <Navigation
           activeTab={activeTab}
           onTabChange={(tab) => setActiveTab(tab)}
-          datesBadgeCount={datesBadgeCount}
           boxesBadgeCount={boxesBadgeCount}
         />
 
@@ -335,26 +332,6 @@ export default function App() {
               matrixOrbOverride={matrixOrbOverride}
               onApplyMatrixOrb={(val) => setMatrixOrbOverride(val)}
               aspectMode={computedParams.aspectMode}
-            />
-          )}
-
-          {activeTab === 'dates' && (
-            <CriticalDatesTab
-              matrix={matrix}
-              dateFrom={computedParams.dateFrom}
-              dateTo={computedParams.dateTo}
-              priceLo={computedParams.priceLo}
-              priceHi={computedParams.priceHi}
-              orb={computedParams.orb}
-              minHighlight={computedParams.minHighlight}
-            />
-          )}
-
-          {activeTab === 'calendar' && (
-            <DepartureCalendarTab
-              matrix={matrix}
-              minHighlight={computedParams.minHighlight}
-              orb={computedParams.orb}
             />
           )}
 
