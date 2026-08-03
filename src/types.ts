@@ -122,6 +122,16 @@ export interface WallSyncDetail {
   syncPrices: number[];
 }
 
+export interface BoxWallMatch {
+  matchedPrice: number;
+  matchType: 'Direct Wall' | 'Sync Price';
+  wallKind: 'perm' | 'strong';
+  distancePct: number;
+  offset?: number;
+  angleDeg?: number;
+  angleLabel?: string;
+}
+
 export interface BoxingDate {
   date: string;
   kind: 'perm' | 'strong';
@@ -129,6 +139,8 @@ export interface BoxingDate {
   strong: number[];
   wallSyncs?: WallSyncDetail[];
   syncPrices?: number[];
+  wallMatches?: BoxWallMatch[];
+  hasWallMatch?: boolean;
   isWeekend?: boolean;
   snappedFrom?: string;
 }

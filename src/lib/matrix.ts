@@ -1,6 +1,6 @@
 import {
   PlanetName, AspectName, MatrixData, DayMatrix, DepartureProjection,
-  DepartureEvent, BoxBreakoutData, BoxLevel, IntradayPPPoint, BoxingDate, WallSyncDetail
+  DepartureEvent, BoxBreakoutData, BoxLevel, IntradayPPPoint, BoxingDate, WallSyncDetail, BoxWallMatch
 } from '../types';
 import {
   getPositions, findAspect, findAspectAll, angDiff, daysSinceEpoch,
@@ -475,12 +475,13 @@ export function getWallPricesFromMatrix(
 }
 
 export const SYNC_RING_OFFSETS = [
+  { offset: -18, angle: -180, label: 'Opposition (-180°)', abbr: '-180°' },
   { offset: -12, angle: -120, label: 'Trine (-120°)', abbr: '-120°' },
   { offset: -9, angle: -90, label: 'Square (-90°)', abbr: '-90°' },
   { offset: 0, angle: 0, label: 'Conjunction (0°)', abbr: '0°' },
   { offset: 9, angle: 90, label: 'Square (+90°)', abbr: '+90°' },
   { offset: 12, angle: 120, label: 'Trine (+120°)', abbr: '+120°' },
-  { offset: 18, angle: 180, label: 'Opposition (180°)', abbr: '180°' }
+  { offset: 18, angle: 180, label: 'Opposition (+180°)', abbr: '+180°' }
 ] as const;
 
 export function computeSyncPricesForWall(wallPrice: number, kind: 'perm' | 'strong' = 'perm'): WallSyncDetail {
@@ -495,6 +496,121 @@ export function computeSyncPricesForWall(wallPrice: number, kind: 'perm' | 'stro
     syncRings,
     syncPrices
   };
+}
+
+export function checkCandleWallMatch(
+  candle: { high: number; low: number; close: number },
+  boxingDate: BoxingDate
+): BoxWallMatch[] {
+  const matches: BoxWallMatch[] = [];
+  const seenPrices = new Set<number>();
+
+  const getAngleInfo = (sp: number) => {
+    if (boxingDate.wallSyncs) {
+      for (const ws of boxingDate.wallSyncs) {
+        if (ws.syncPrices.includes(sp)) {
+          const offset = Math.round((sp - ws.wallPrice) / 100);
+          const angleDeg = offset * 10;
+          const angleLabel = offset === 0 ? '0°' : (offset > 0 ? `+${angleDeg}°` : `${angleDeg}°`);
+          return { offset, angleDeg, angleLabel };
+        }
+      }
+    }
+    return { offset: 0, angleDeg: 0, angleLabel: '0°' };
+  };
+
+  // 1. Direct perm walls match
+  boxingDate.perm.forEach((pw) => {
+    if (candle.low <= pw && candle.high >= pw) {
+      matches.push({
+        matchedPrice: pw,
+        matchType: 'Direct Wall',
+        wallKind: 'perm',
+        distancePct: 0,
+        offset: 0,
+        angleDeg: 0,
+        angleLabel: '0°'
+      });
+      seenPrices.add(pw);
+    } else {
+      const closeDist = Math.abs(candle.close - pw) / pw;
+      if (closeDist <= 0.005) {
+        matches.push({
+          matchedPrice: pw,
+          matchType: 'Direct Wall',
+          wallKind: 'perm',
+          distancePct: +(closeDist * 100).toFixed(2),
+          offset: 0,
+          angleDeg: 0,
+          angleLabel: '0°'
+        });
+        seenPrices.add(pw);
+      }
+    }
+  });
+
+  // 2. Direct strong walls match
+  boxingDate.strong.forEach((sw) => {
+    if (seenPrices.has(sw)) return;
+    if (candle.low <= sw && candle.high >= sw) {
+      matches.push({
+        matchedPrice: sw,
+        matchType: 'Direct Wall',
+        wallKind: 'strong',
+        distancePct: 0,
+        offset: 0,
+        angleDeg: 0,
+        angleLabel: '0°'
+      });
+      seenPrices.add(sw);
+    } else {
+      const closeDist = Math.abs(candle.close - sw) / sw;
+      if (closeDist <= 0.005) {
+        matches.push({
+          matchedPrice: sw,
+          matchType: 'Direct Wall',
+          wallKind: 'strong',
+          distancePct: +(closeDist * 100).toFixed(2),
+          offset: 0,
+          angleDeg: 0,
+          angleLabel: '0°'
+        });
+        seenPrices.add(sw);
+      }
+    }
+  });
+
+  // 3. Sync turn prices match
+  if (boxingDate.syncPrices) {
+    boxingDate.syncPrices.forEach((sp) => {
+      if (seenPrices.has(sp)) return;
+      const angleInfo = getAngleInfo(sp);
+      if (candle.low <= sp && candle.high >= sp) {
+        matches.push({
+          matchedPrice: sp,
+          matchType: 'Sync Price',
+          wallKind: boxingDate.kind,
+          distancePct: 0,
+          ...angleInfo
+        });
+        seenPrices.add(sp);
+      } else {
+        const closeDist = Math.abs(candle.close - sp) / sp;
+        if (closeDist <= 0.005) {
+          matches.push({
+            matchedPrice: sp,
+            matchType: 'Sync Price',
+            wallKind: boxingDate.kind,
+            distancePct: +(closeDist * 100).toFixed(2),
+            ...angleInfo
+          });
+          seenPrices.add(sp);
+        }
+      }
+    });
+  }
+
+  return matches;
 }
 
 export function computeBoxingDates(

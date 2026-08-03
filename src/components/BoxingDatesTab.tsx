@@ -23,7 +23,8 @@ import {
   Award,
   Zap,
   Target,
-  Box
+  Box,
+  Star
 } from 'lucide-react';
 
 interface BoxingDatesTabProps {
@@ -95,6 +96,7 @@ export const BoxingDatesTab: React.FC<BoxingDatesTabProps> = ({
   });
 
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [wallMatchOnly, setWallMatchOnly] = useState<boolean>(false);
   const [showMathExplainer, setShowMathExplainer] = useState<boolean>(false);
   const [selectedDate, setSelectedDate] = useState<BoxingDate | null>(null);
 
@@ -134,7 +136,7 @@ export const BoxingDatesTab: React.FC<BoxingDatesTabProps> = ({
   }, [anchorDate, dateTo, permWalls, strongWalls, snapTradingDay]);
 
   // Map 42 Signal Catalog Matches for each Boxing Date
-  const signalsByDateMap = useMemo(() => {
+  const signalsByDateMap = useMemo<Record<string, SignalDef[]>>(() => {
     const map: Record<string, SignalDef[]> = {};
 
     allBoxingDates.forEach((bd) => {
@@ -204,6 +206,45 @@ export const BoxingDatesTab: React.FC<BoxingDatesTabProps> = ({
     return Array.from(monthsSet).sort();
   }, [allBoxingDates]);
 
+  // Map of wall matches for each Boxing Date (Price Box Wall = Date Box Translated Wall)
+  const wallMatchesMap = useMemo<Record<string, { matches: number[]; formattedMatches: string[]; isPermMatch: boolean }>>(() => {
+    const map: Record<string, { matches: number[]; formattedMatches: string[]; isPermMatch: boolean }> = {};
+    allBoxingDates.forEach((bd) => {
+      const formattedSet = new Set<string>();
+      const matchPricesSet = new Set<number>();
+
+      // Direct matches (0° angle)
+      [...bd.perm, ...bd.strong].forEach((p) => {
+        if (permWalls.includes(p) || strongWalls.includes(p)) {
+          matchPricesSet.add(p);
+          formattedSet.add(`${p.toLocaleString()} (0°)`);
+        }
+      });
+
+      // Sync matches (calculate angle based on wall offset)
+      if (bd.wallSyncs) {
+        bd.wallSyncs.forEach((ws) => {
+          ws.syncPrices.forEach((sp) => {
+            if (permWalls.includes(sp) || strongWalls.includes(sp)) {
+              matchPricesSet.add(sp);
+              const offset = Math.round((sp - ws.wallPrice) / 100);
+              const angleDeg = offset * 10;
+              const angleLabel = offset === 0 ? '0°' : (offset > 0 ? `+${angleDeg}°` : `${angleDeg}°`);
+              formattedSet.add(`${sp.toLocaleString()} (${angleLabel})`);
+            }
+          });
+        });
+      }
+
+      const allMatches = Array.from(matchPricesSet).sort((a, b) => a - b);
+      const formattedMatches = Array.from(formattedSet);
+      const isPermMatch = bd.perm.some((p) => permWalls.includes(p) || strongWalls.includes(p));
+
+      map[bd.date] = { matches: allMatches, formattedMatches, isPermMatch };
+    });
+    return map;
+  }, [allBoxingDates, permWalls, strongWalls]);
+
   // Filtered Boxing Dates
   const filteredBoxingDates = useMemo(() => {
     return allBoxingDates.filter((bd) => {
@@ -217,6 +258,11 @@ export const BoxingDatesTab: React.FC<BoxingDatesTabProps> = ({
       if (signalFilter === 'silver' && !sigs.some((s) => s.tier === 'silver')) return false;
       if (signalFilter === 'bronze' && !sigs.some((s) => s.tier === 'bronze')) return false;
 
+      if (wallMatchOnly) {
+        const matchInfo = wallMatchesMap[bd.date];
+        if (!matchInfo || matchInfo.matches.length === 0) return false;
+      }
+
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase().trim();
         const matchesDate = bd.date.toLowerCase().includes(q);
@@ -227,13 +273,14 @@ export const BoxingDatesTab: React.FC<BoxingDatesTabProps> = ({
       }
       return true;
     });
-  }, [allBoxingDates, monthFilter, kindFilter, signalFilter, searchQuery, signalsByDateMap]);
+  }, [allBoxingDates, monthFilter, kindFilter, signalFilter, wallMatchOnly, searchQuery, signalsByDateMap, wallMatchesMap]);
 
   // Stats
   const totalPermDates = useMemo(() => allBoxingDates.filter((d) => d.kind === 'perm').length, [allBoxingDates]);
   const totalStrongDates = useMemo(() => allBoxingDates.filter((d) => d.kind === 'strong').length, [allBoxingDates]);
-  const datesWithSignalsCount = useMemo(() => Object.values(signalsByDateMap).filter((sigs) => sigs.length > 0).length, [signalsByDateMap]);
-  const goldSignalsDatesCount = useMemo(() => Object.values(signalsByDateMap).filter((sigs) => sigs.some((s) => s.tier === 'gold')).length, [signalsByDateMap]);
+  const datesWithSignalsCount = useMemo(() => (Object.values(signalsByDateMap) as SignalDef[][]).filter((sigs) => sigs.length > 0).length, [signalsByDateMap]);
+  const goldSignalsDatesCount = useMemo(() => (Object.values(signalsByDateMap) as SignalDef[][]).filter((sigs) => sigs.some((s) => s.tier === 'gold')).length, [signalsByDateMap]);
+  const wallMatchDatesCount = useMemo(() => (Object.values(wallMatchesMap) as { matches: number[]; isPermMatch: boolean }[]).filter((m) => m.matches.length > 0).length, [wallMatchesMap]);
 
   // Group by Month for Grid View
   const monthlyGroups = useMemo<Record<string, BoxingDate[]>>(() => {
@@ -530,6 +577,23 @@ export const BoxingDatesTab: React.FC<BoxingDatesTabProps> = ({
               </button>
             </div>
 
+            {/* ⭐ Wall Matches Toggle */}
+            <button
+              onClick={() => setWallMatchOnly(!wallMatchOnly)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 border cursor-pointer ${
+                wallMatchOnly
+                  ? 'bg-amber-400 text-slate-950 border-amber-300 shadow-md shadow-amber-500/20 ring-1 ring-amber-400/50'
+                  : 'bg-slate-950 text-amber-300 border-amber-500/30 hover:bg-amber-500/10'
+              }`}
+              title="Filter special days where Price Box Wall matches Date Box Translated Price Walls"
+            >
+              <Star className={`w-3.5 h-3.5 ${wallMatchOnly ? 'fill-slate-950 text-slate-950' : 'fill-amber-400 text-amber-400'}`} />
+              <span>Wall Matches</span>
+              <span className={`px-1.5 py-0.2 rounded text-[10px] font-mono ${wallMatchOnly ? 'bg-slate-950 text-amber-300 font-extrabold' : 'bg-amber-500/20 text-amber-300 font-bold'}`}>
+                {wallMatchDatesCount}
+              </span>
+            </button>
+
             {/* View Mode Switcher */}
             <div className="flex items-center bg-slate-950 p-1 rounded-lg border border-slate-800">
               <button
@@ -632,13 +696,17 @@ export const BoxingDatesTab: React.FC<BoxingDatesTabProps> = ({
                     const dayOfWeek = getDayOfWeekStr(bd.date);
                     const totalWalls = bd.perm.length + bd.strong.length;
                     const sigs = signalsByDateMap[bd.date] || [];
+                    const matchInfo = wallMatchesMap[bd.date];
+                    const hasWallMatch = matchInfo && matchInfo.matches.length > 0;
 
                     return (
                       <div
                         key={bd.date}
                         onClick={() => setSelectedDate(bd)}
                         className={`p-3.5 rounded-xl border font-mono transition-all cursor-pointer hover:scale-[1.02] shadow-lg flex flex-col justify-between space-y-3 relative ${
-                          sigs.length > 0
+                          hasWallMatch
+                            ? 'bg-slate-900 border-amber-400 shadow-amber-500/20 ring-1 ring-amber-400/50'
+                            : sigs.length > 0
                             ? 'bg-slate-900 border-amber-400/80 shadow-amber-500/10 ring-1 ring-amber-400/20'
                             : isPerm
                             ? 'bg-slate-900/90 border-amber-500/40 hover:border-amber-400 shadow-amber-500/5'
@@ -654,6 +722,21 @@ export const BoxingDatesTab: React.FC<BoxingDatesTabProps> = ({
                             </span>
                             <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-amber-400 text-slate-950">
                               {sigs[0].lift.toFixed(1)}× Lift
+                            </span>
+                          </div>
+                        )}
+
+                        {/* Special Price Box Wall Match Ribbon */}
+                        {hasWallMatch && (
+                          <div className="flex items-center justify-between gap-1 px-2 py-1 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-bold">
+                            <span className="flex items-center gap-1">
+                              <Star className="w-3.5 h-3.5 text-amber-400 fill-amber-400 animate-pulse" />
+                              ⭐ PRICE WALL MATCH
+                            </span>
+                            <span className="font-mono text-amber-200">
+                              {matchInfo.formattedMatches && matchInfo.formattedMatches.length > 0
+                                ? matchInfo.formattedMatches.join(', ')
+                                : matchInfo.matches.map((m) => m.toLocaleString()).join(', ')}
                             </span>
                           </div>
                         )}
@@ -843,15 +926,23 @@ export const BoxingDatesTab: React.FC<BoxingDatesTabProps> = ({
                       </td>
                       <td className="p-3 text-slate-400">+{daysFromAnchor}d</td>
                       <td className="p-3">
-                        <span
-                          className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                            isPerm
-                              ? 'bg-amber-400 text-slate-950'
-                              : 'bg-teal-500/20 text-teal-300 border border-teal-500/30'
-                          }`}
-                        >
-                          {isPerm ? '🥇 Permanent' : '╌ Strong'}
-                        </span>
+                        <div className="flex flex-col gap-1 items-start">
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              isPerm
+                                ? 'bg-amber-400 text-slate-950'
+                                : 'bg-teal-500/20 text-teal-300 border border-teal-500/30'
+                            }`}
+                          >
+                            {isPerm ? '🥇 Permanent' : '╌ Strong'}
+                          </span>
+                          {wallMatchesMap[bd.date] && wallMatchesMap[bd.date].matches.length > 0 && (
+                            <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[9px] font-bold font-mono flex items-center gap-1">
+                              <Star className="w-3 h-3 text-amber-400 fill-amber-400" />
+                              MATCH [{(wallMatchesMap[bd.date].formattedMatches || wallMatchesMap[bd.date].matches.map((m) => m.toLocaleString())).join(', ')}]
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="p-3">
                         {sigs.length > 0 ? (

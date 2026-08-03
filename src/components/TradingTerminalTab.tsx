@@ -41,10 +41,11 @@ import {
   Calendar,
   CalendarDays,
   Box,
-  Target
+  Target,
+  Star
 } from 'lucide-react';
-import { MatrixData, DepartureEvent, PlanetName, AspectName } from '../types';
-import { scanCriticalDates, computeBoxingDates, computeBoxBreakouts, ringToDegree, fromIso } from '../lib/matrix';
+import { MatrixData, DepartureEvent, PlanetName, AspectName, BoxWallMatch } from '../types';
+import { scanCriticalDates, computeBoxingDates, computeBoxBreakouts, ringToDegree, fromIso, checkCandleWallMatch } from '../lib/matrix';
 import { PLANET_META, ASPECT_META, BODY_LIST, getPositions, findAspectAll } from '../lib/astronomy';
 import { getSignal, TIER_META } from '../lib/signals';
 
@@ -547,6 +548,9 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
       (bd) => bd.date === dateStr || bd.snappedFrom === dateStr
     );
     const nextBoxingDate = rawBoxingDates.find((bd) => bd.date > dateStr);
+    const candleWallMatches = (matchedBoxingDate && activeHoverCandle)
+      ? checkCandleWallMatch(activeHoverCandle, matchedBoxingDate)
+      : [];
 
     // 3. Price Boxing & Gann Box Channel Info
     const activeGannBox = gannBoxes.find(
@@ -630,7 +634,8 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
       matrixHitCount,
       matchedBoxingDate,
       nextBoxingDate,
-      priceBoxingDetails
+      priceBoxingDetails,
+      candleWallMatches
     };
   }, [activeHoverCandle, matrix, permWalls, strongWalls, orb, rawBoxingDates, gannBoxes]);
 
@@ -1026,24 +1031,52 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
         filteredBoxingDates.forEach((bd) => {
           const matchTime = dateToTimestamp.get(bd.date);
           if (matchTime) {
+            const candleOnDate = candles.find((c) => c.time === matchTime);
+            const wallMatches = candleOnDate ? checkCandleWallMatch(candleOnDate, bd) : [];
+            const hasWallMatch = wallMatches.length > 0;
+
             const existing = timeToMarker.get(matchTime);
             const isPerm = bd.kind === 'perm';
-            const boxLabel = `🥊 BOX ${isPerm ? 'PERM' : 'STR'}`;
-            const boxColor = isPerm ? '#f59e0b' : '#14b8a6';
 
-            if (existing) {
-              timeToMarker.set(matchTime, {
-                ...existing,
-                text: `${existing.text} | ${boxLabel}`
-              });
+            if (hasWallMatch) {
+              const matchedPriceStr = wallMatches.map((m) => `${m.matchedPrice.toLocaleString()} (${m.angleLabel || '0°'})`).join(', ');
+              const boxLabel = `⭐ MATCH [${matchedPriceStr}]`;
+              const boxColor = '#f59e0b'; // Gold highlight
+
+              if (existing) {
+                timeToMarker.set(matchTime, {
+                  ...existing,
+                  color: '#f59e0b',
+                  shape: 'square',
+                  text: `⭐ ${existing.text} | MATCH ${matchedPriceStr}`
+                });
+              } else {
+                timeToMarker.set(matchTime, {
+                  time: matchTime,
+                  position: 'aboveBar',
+                  color: boxColor,
+                  shape: 'square',
+                  text: boxLabel
+                });
+              }
             } else {
-              timeToMarker.set(matchTime, {
-                time: matchTime,
-                position: isPerm ? 'aboveBar' : 'belowBar',
-                color: boxColor,
-                shape: isPerm ? 'square' : 'circle',
-                text: `${boxLabel} (${bd.date.slice(5)})`
-              });
+              const boxLabel = `🥊 BOX ${isPerm ? 'PERM' : 'STR'}`;
+              const boxColor = isPerm ? '#f59e0b' : '#14b8a6';
+
+              if (existing) {
+                timeToMarker.set(matchTime, {
+                  ...existing,
+                  text: `${existing.text} | ${boxLabel}`
+                });
+              } else {
+                timeToMarker.set(matchTime, {
+                  time: matchTime,
+                  position: isPerm ? 'aboveBar' : 'belowBar',
+                  color: boxColor,
+                  shape: isPerm ? 'square' : 'circle',
+                  text: `${boxLabel} (${bd.date.slice(5)})`
+                });
+              }
             }
           }
         });
@@ -1790,6 +1823,23 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
                       </span>
                     ))}
                   </div>
+
+                  {/* Special Price-Date Box Wall Match Highlight Callout */}
+                  {hoverAstroInfo.candleWallMatches && hoverAstroInfo.candleWallMatches.length > 0 && (
+                    <div className="p-1.5 rounded bg-gradient-to-r from-amber-500/30 via-amber-500/20 to-slate-900 border border-amber-400 text-[10px] space-y-1 my-1 shadow-sm">
+                      <div className="text-amber-200 font-extrabold flex items-center gap-1">
+                        <Star className="w-3.5 h-3.5 text-amber-300 fill-amber-300 animate-pulse" />
+                        <span>⭐ SPECIAL DAY: PRICE-DATE WALL MATCH!</span>
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        {hoverAstroInfo.candleWallMatches.map((wm, idx) => (
+                          <span key={idx} className="px-1.5 py-0.5 rounded bg-amber-400 text-slate-950 font-bold font-mono text-[9px]">
+                            {wm.matchType}: {wm.matchedPrice.toLocaleString()} ({wm.angleLabel || '0°'})
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   {hoverAstroInfo.matchedBoxingDate.syncPrices && hoverAstroInfo.matchedBoxingDate.syncPrices.length > 0 && (
                     <div className="text-[10px] text-slate-300 flex flex-wrap items-center gap-1 pt-0.5 border-t border-amber-500/20">
                       <span className="text-amber-300 font-semibold">Sync Turn Targets:</span>
