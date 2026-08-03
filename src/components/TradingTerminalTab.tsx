@@ -549,7 +549,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
     );
     const nextBoxingDate = rawBoxingDates.find((bd) => bd.date > dateStr);
     const candleWallMatches = (matchedBoxingDate && activeHoverCandle)
-      ? checkCandleWallMatch(activeHoverCandle, matchedBoxingDate)
+      ? checkCandleWallMatch(activeHoverCandle, matchedBoxingDate, permWalls, strongWalls)
       : [];
 
     // 3. Price Boxing & Gann Box Channel Info
@@ -1032,7 +1032,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
           const matchTime = dateToTimestamp.get(bd.date);
           if (matchTime) {
             const candleOnDate = candles.find((c) => c.time === matchTime);
-            const wallMatches = candleOnDate ? checkCandleWallMatch(candleOnDate, bd) : [];
+            const wallMatches = candleOnDate ? checkCandleWallMatch(candleOnDate, bd, permWalls, strongWalls) : [];
             const hasWallMatch = wallMatches.length > 0;
 
             const existing = timeToMarker.get(matchTime);

@@ -500,7 +500,9 @@ export function computeSyncPricesForWall(wallPrice: number, kind: 'perm' | 'stro
 
 export function checkCandleWallMatch(
   candle: { high: number; low: number; close: number },
-  boxingDate: BoxingDate
+  boxingDate: BoxingDate,
+  permWalls: number[] = [],
+  strongWalls: number[] = []
 ): BoxWallMatch[] {
   const matches: BoxWallMatch[] = [];
   const seenPrices = new Set<number>();
@@ -534,7 +536,7 @@ export function checkCandleWallMatch(
       seenPrices.add(pw);
     } else {
       const closeDist = Math.abs(candle.close - pw) / pw;
-      if (closeDist <= 0.005) {
+      if (closeDist <= 0.0015) {
         matches.push({
           matchedPrice: pw,
           matchType: 'Direct Wall',
@@ -565,7 +567,7 @@ export function checkCandleWallMatch(
       seenPrices.add(sw);
     } else {
       const closeDist = Math.abs(candle.close - sw) / sw;
-      if (closeDist <= 0.005) {
+      if (closeDist <= 0.0015) {
         matches.push({
           matchedPrice: sw,
           matchType: 'Direct Wall',
@@ -580,10 +582,15 @@ export function checkCandleWallMatch(
     }
   });
 
-  // 3. Sync turn prices match
+  // 3. Sync turn prices match - ONLY if matching an active Price Wall
   if (boxingDate.syncPrices) {
     boxingDate.syncPrices.forEach((sp) => {
       if (seenPrices.has(sp)) return;
+
+      // Filter: sync price must be an active Price Box Wall (if configured)
+      const isActiveWall = permWalls.includes(sp) || strongWalls.includes(sp);
+      if (!isActiveWall && (permWalls.length > 0 || strongWalls.length > 0)) return;
+
       const angleInfo = getAngleInfo(sp);
       if (candle.low <= sp && candle.high >= sp) {
         matches.push({
@@ -596,7 +603,7 @@ export function checkCandleWallMatch(
         seenPrices.add(sp);
       } else {
         const closeDist = Math.abs(candle.close - sp) / sp;
-        if (closeDist <= 0.005) {
+        if (closeDist <= 0.0015) {
           matches.push({
             matchedPrice: sp,
             matchType: 'Sync Price',
