@@ -742,18 +742,6 @@ export function selectDiverseSwingAnchors(
     }
   }
 
-  if (selected.length < K) {
-    const selectedDates = new Set(selected.map((s) => s.date));
-    for (let i = validPivots.length - 1; i >= 0; i--) {
-      const pivot = validPivots[i];
-      if (!selectedDates.has(pivot.date)) {
-        selected.push(pivot);
-        selectedDates.add(pivot.date);
-        if (selected.length >= K) break;
-      }
-    }
-  }
-
   return selected.sort((a, b) => a.date.localeCompare(b.date));
 }
 
@@ -782,9 +770,11 @@ export function computeSwingConfluence(
 
   const anchors = Array.from(contributingMap.values());
   return {
-    convergenceCount: anchors.length,
     isConfluence: anchors.length >= 2,
-    anchors
+    anchors,
+    spokeCount:   anchors.length,
+    highAnchors:  anchors.filter(a => a.type === 'High').length,
+    lowAnchors:   anchors.filter(a => a.type === 'Low').length
   };
 }
 

@@ -143,6 +143,7 @@ export interface BoxingDate {
   hasWallMatch?: boolean;
   isWeekend?: boolean;
   snappedFrom?: string;
+  swingConfluence?: SwingConfluenceResult;
 }
 
 export type BoxingDatesResult = BoxingDate[];
@@ -154,3 +155,41 @@ export interface MarketPreset {
   priceHi: number;
   defaultRangeDays: number;
 }
+
+// ── Swing Pivot types ─────────────────────────────────────────────────────
+
+/** One NIFTY 3%-ZigZag swing pivot (static dataset or user-entered). */
+export interface SwingPivot {
+  date: string;          // ISO "YYYY-MM-DD"
+  type: 'High' | 'Low';
+  price: number;
+  ring: number;          // Math.floor(price / 100)
+  spoke: number;         // ring % 36
+}
+
+/** User-entered swing pivot (same shape, runtime only). */
+export type UserSwingPivot = SwingPivot;
+
+/**
+ * One anchor that contributed a projection onto a confluence date.
+ * Exact relationship: anchorDate + spoke + 36 * cycleK === targetDate
+ */
+export interface SwingAnchor {
+  date: string;
+  type: 'High' | 'Low';
+  price: number;
+  ring: number;
+  spoke: number;
+  cycleK: number;          // which 36-cycle step projected to target
+  daysProjected: number;   // total calendar days from anchor to target
+}
+
+/** Attached to a date when ≥2 distinct spoke-anchors converge on it. */
+export interface SwingConfluenceResult {
+  isConfluence: boolean;
+  anchors: SwingAnchor[];
+  spokeCount: number;
+  highAnchors: number;
+  lowAnchors: number;
+}
+

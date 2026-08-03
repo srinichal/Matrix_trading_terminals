@@ -9,7 +9,7 @@ import { TradingTerminalTab } from './components/TradingTerminalTab';
 import { SignalsCatalogModal } from './components/SignalsCatalogModal';
 import { MatrixWallsModal } from './components/MatrixWallsModal';
 import { TabType } from './components/Navigation';
-import { MarketPreset } from './types';
+import { MarketPreset, SwingPivot } from './types';
 import { computeMatrix, scanCriticalDates, computeBoxBreakouts } from './lib/matrix';
 import { ALL_ASPECTS, MAJOR_ASPECTS } from './lib/astronomy';
 import {
@@ -58,6 +58,18 @@ export default function App() {
       aspectMode: 'major' as 'all' | 'major'
     };
   }, []);
+
+  const [userSwings, setUserSwings] = useState<SwingPivot[]>(() => {
+    try {
+      const saved = localStorage.getItem('app_userSwings');
+      return saved ? JSON.parse(saved) : [];
+    } catch { return []; }
+  });
+
+  useEffect(() => {
+    try { localStorage.setItem('app_userSwings', JSON.stringify(userSwings)); }
+    catch {}
+  }, [userSwings]);
 
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(() => {
     try {
@@ -459,6 +471,15 @@ export default function App() {
               priceHi={computedParams.priceHi}
               orb={computedParams.orb}
               minHighlight={computedParams.minHighlight}
+              userSwings={userSwings}
+              onAddUserSwing={(s) => setUserSwings(prev => {
+                const merged = [...prev.filter(x => x.date !== s.date), s]
+                  .sort((a, b) => a.date.localeCompare(b.date));
+                return merged;
+              })}
+              onRemoveUserSwing={(date) => setUserSwings(prev =>
+                prev.filter(x => x.date !== date)
+              )}
             />
           )}
 
