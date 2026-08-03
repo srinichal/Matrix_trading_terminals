@@ -761,7 +761,10 @@ export const BoxingDatesTab: React.FC<BoxingDatesTabProps> = ({
                                   : 'bg-teal-500/20 text-teal-300 border border-teal-500/30'
                               }`}
                             >
-                              {isPerm ? '🥇 PERM' : '╌ STRONG'}
+                              {(() => {
+                                const fw = isPerm ? (bd.perm[0] ?? bd.strong[0]) : (bd.strong[0] ?? bd.perm[0]);
+                                return `${isPerm ? '🥇 PERM' : '╌ STRONG'}${fw ? ` @ ${fw.toLocaleString()}` : ''}`;
+                              })()}
                             </span>
                           </div>
 
@@ -934,7 +937,10 @@ export const BoxingDatesTab: React.FC<BoxingDatesTabProps> = ({
                                 : 'bg-teal-500/20 text-teal-300 border border-teal-500/30'
                             }`}
                           >
-                            {isPerm ? '🥇 Permanent' : '╌ Strong'}
+                            {(() => {
+                              const fw = isPerm ? (bd.perm[0] ?? bd.strong[0]) : (bd.strong[0] ?? bd.perm[0]);
+                              return `${isPerm ? '🥇 Permanent' : '╌ Strong'}${fw ? ` @ ${fw.toLocaleString()}` : ''}`;
+                            })()}
                           </span>
                           {wallMatchesMap[bd.date] && wallMatchesMap[bd.date].matches.length > 0 && (
                             <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[9px] font-bold font-mono flex items-center gap-1">

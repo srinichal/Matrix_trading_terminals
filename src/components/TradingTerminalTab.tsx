@@ -549,7 +549,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
     );
     const nextBoxingDate = rawBoxingDates.find((bd) => bd.date > dateStr);
     const candleWallMatches = (matchedBoxingDate && activeHoverCandle)
-      ? checkCandleWallMatch(activeHoverCandle, matchedBoxingDate, permWalls, strongWalls)
+      ? checkCandleWallMatch(activeHoverCandle, matchedBoxingDate)
       : [];
 
     // 3. Price Boxing & Gann Box Channel Info
@@ -1032,7 +1032,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
           const matchTime = dateToTimestamp.get(bd.date);
           if (matchTime) {
             const candleOnDate = candles.find((c) => c.time === matchTime);
-            const wallMatches = candleOnDate ? checkCandleWallMatch(candleOnDate, bd, permWalls, strongWalls) : [];
+            const wallMatches = candleOnDate ? checkCandleWallMatch(candleOnDate, bd) : [];
             const hasWallMatch = wallMatches.length > 0;
 
             const existing = timeToMarker.get(matchTime);
@@ -1060,13 +1060,15 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
                 });
               }
             } else {
-              const boxLabel = `🥊 BOX ${isPerm ? 'PERM' : 'STR'}`;
+              const firstWall = isPerm ? (bd.perm[0] ?? bd.strong[0]) : (bd.strong[0] ?? bd.perm[0]);
+              const wallStr = firstWall ? `@ ${firstWall.toLocaleString()}` : '';
+              const boxLabel = `🥊 BOX ${isPerm ? 'PERM' : 'STR'}${wallStr ? ` ${wallStr}` : ''}`;
               const boxColor = isPerm ? '#f59e0b' : '#14b8a6';
 
               if (existing) {
                 timeToMarker.set(matchTime, {
                   ...existing,
-                  text: `${existing.text} | ${boxLabel}`
+                  text: `${existing.text} | ${boxLabel} (${bd.date.slice(5)})`
                 });
               } else {
                 timeToMarker.set(matchTime, {
