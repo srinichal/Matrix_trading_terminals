@@ -1,6 +1,7 @@
 import {
   PlanetName, AspectName, MatrixData, DayMatrix, DepartureProjection,
-  DepartureEvent, BoxBreakoutData, BoxLevel, IntradayPPPoint, BoxingDate, WallSyncDetail, BoxWallMatch
+  DepartureEvent, BoxBreakoutData, BoxLevel, IntradayPPPoint, BoxingDate, WallSyncDetail, BoxWallMatch,
+  SwingPivot, SwingAnchor, SwingConfluenceResult
 } from '../types';
 import {
   getPositions, findAspect, findAspectAll, angDiff, daysSinceEpoch,
@@ -720,4 +721,177 @@ export function computeBoxingDates(
 
   return result;
 }
+
+export function selectDiverseSwingAnchors(
+  allSwings: SwingPivot[],
+  beforeDate: string,
+  K: number = 18
+): SwingPivot[] {
+  const validPivots = allSwings.filter((s) => s.date < beforeDate);
+  if (validPivots.length === 0) return [];
+
+  const selected: SwingPivot[] = [];
+  const seenSpokes = new Set<number>();
+
+  for (let i = validPivots.length - 1; i >= 0; i--) {
+    const pivot = validPivots[i];
+    if (!seenSpokes.has(pivot.spoke)) {
+      seenSpokes.add(pivot.spoke);
+      selected.push(pivot);
+      if (selected.length >= K) break;
+    }
+  }
+
+  if (selected.length < K) {
+    const selectedDates = new Set(selected.map((s) => s.date));
+    for (let i = validPivots.length - 1; i >= 0; i--) {
+      const pivot = validPivots[i];
+      if (!selectedDates.has(pivot.date)) {
+        selected.push(pivot);
+        selectedDates.add(pivot.date);
+        if (selected.length >= K) break;
+      }
+    }
+  }
+
+  return selected.sort((a, b) => a.date.localeCompare(b.date));
+}
+
+export function computeSwingConfluence(
+  targetDate: string,
+  diverseAnchors: SwingPivot[]
+): SwingConfluenceResult {
+  const targetMs = fromIso(targetDate).getTime();
+  const CYCLE = 36;
+  const contributingMap = new Map<number, SwingAnchor>();
+
+  for (const anc of diverseAnchors) {
+    const ancMs = fromIso(anc.date).getTime();
+    const spanDays = Math.round((targetMs - ancMs) / 86_400_000);
+    if (spanDays > anc.spoke && (spanDays - anc.spoke) % CYCLE === 0) {
+      const k = (spanDays - anc.spoke) / CYCLE;
+      if (k >= 1 && !contributingMap.has(anc.spoke)) {
+        contributingMap.set(anc.spoke, {
+          ...anc,
+          cycleK: k,
+          daysProjected: spanDays
+        });
+      }
+    }
+  }
+
+  const anchors = Array.from(contributingMap.values());
+  return {
+    convergenceCount: anchors.length,
+    isConfluence: anchors.length >= 2,
+    anchors
+  };
+}
+
+export interface MultiAnchorDate {
+  date: string;                    // ISO projected date
+  convergenceCount: number;        // how many distinct anchors project here
+  isConfluence: boolean;           // convergenceCount >= 2
+  anchors: SwingAnchor[];          // contributing anchors
+  spokeCount: number;
+  highAnchors: number;
+  lowAnchors: number;
+  isWeekend: boolean;
+  snappedDate?: string;            // if weekend and snap=true, the original date
+}
+
+export function computeMultiAnchorDates(
+  allSwings: SwingPivot[],         // NIFTY_SWINGS merged with userSwings, sorted ascending
+  windowStart: string,             // ISO — start of the forward window (analysis date)
+  windowEnd: string,               // ISO — end of the forward window
+  K: number = 18,
+  snapTradingDay: boolean = false
+): MultiAnchorDate[] {
+  if (!windowStart || !windowEnd) return [];
+
+  const startObj = fromIso(windowStart);
+  const endObj   = fromIso(windowEnd);
+  if (isNaN(startObj.getTime()) || isNaN(endObj.getTime()) || startObj > endObj) return [];
+
+  const CYCLE    = 36;
+  const spanDays = Math.round((endObj.getTime() - startObj.getTime()) / 86_400_000);
+
+  // Select K diverse anchors — all must predate windowStart
+  const diverseAnchors = selectDiverseSwingAnchors(allSwings, windowStart, K);
+  if (diverseAnchors.length < 1) return [];
+
+  // For each anchor, project its spoke forward across the window
+  // day_map: date string -> contributing anchors
+  const dayMap: Record<string, SwingAnchor[]> = {};
+
+  for (const anc of diverseAnchors) {
+    const ancMs = fromIso(anc.date).getTime();
+    let k = 1;
+    while (true) {
+      const projMs   = ancMs + (anc.spoke + CYCLE * k) * 86_400_000;
+      const projDate = iso(new Date(projMs));
+      const daysAhead = Math.round((projMs - startObj.getTime()) / 86_400_000);
+      if (daysAhead > spanDays) break;
+      if (daysAhead > 0) {
+        const spanFromAnc = anc.spoke + CYCLE * k;
+        if (!dayMap[projDate]) dayMap[projDate] = [];
+        dayMap[projDate].push({
+          date:          anc.date,
+          type:          anc.type,
+          price:         anc.price,
+          ring:          anc.ring,
+          spoke:         anc.spoke,
+          cycleK:        k,
+          daysProjected: spanFromAnc
+        });
+      }
+      k++;
+    }
+  }
+
+  // Build result array
+  const results: MultiAnchorDate[] = [];
+
+  for (const [rawDate, anchorsHere] of Object.entries(dayMap)) {
+    const d         = fromIso(rawDate);
+    const dow       = d.getUTCDay();
+    const isWeekend = dow === 0 || dow === 6;
+
+    let finalDate  = rawDate;
+    let snappedDate: string | undefined;
+
+    if (snapTradingDay && isWeekend) {
+      const daysToAdd  = dow === 6 ? 2 : 1;   // Sat→Mon, Sun→Mon
+      snappedDate      = rawDate;
+      finalDate        = iso(addDays(d, daysToAdd));
+    }
+
+    // Deduplicate by spoke (keep first contributor per spoke)
+    const seenSpokes   = new Set<number>();
+    const deduped: SwingAnchor[] = [];
+    for (const a of anchorsHere) {
+      if (!seenSpokes.has(a.spoke)) {
+        seenSpokes.add(a.spoke);
+        deduped.push(a);
+      }
+    }
+
+    results.push({
+      date:             finalDate,
+      convergenceCount: deduped.length,
+      isConfluence:     deduped.length >= 2,
+      anchors:          deduped,
+      spokeCount:       deduped.length,
+      highAnchors:      deduped.filter(a => a.type === 'High').length,
+      lowAnchors:       deduped.filter(a => a.type === 'Low').length,
+      isWeekend,
+      snappedDate
+    });
+  }
+
+  // Sort ascending by date
+  results.sort((a, b) => a.date.localeCompare(b.date));
+  return results;
+}
+
 
