@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   createChart,
   createSeriesMarkers,
@@ -42,12 +42,14 @@ import {
   CalendarDays,
   Box,
   Target,
-  Star
+  Star,
+  Grid3X3
 } from 'lucide-react';
 import { MatrixData, DepartureEvent, PlanetName, AspectName, BoxWallMatch } from '../types';
 import { scanCriticalDates, computeBoxingDates, computeBoxBreakouts, ringToDegree, fromIso, checkCandleWallMatch } from '../lib/matrix';
 import { PLANET_META, ASPECT_META, BODY_LIST, getPositions, findAspectAll } from '../lib/astronomy';
 import { getSignal, TIER_META } from '../lib/signals';
+import { MatrixWallsModal } from './MatrixWallsModal';
 
 interface TradingTerminalTabProps {
   matrix: MatrixData;
@@ -156,6 +158,14 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
       return true;
     }
   });
+  const [showPointingArrows, setShowPointingArrows] = useState<boolean>(() => {
+    try {
+      const v = localStorage.getItem('tt_showPointingArrows');
+      return v !== null ? JSON.parse(v) : true;
+    } catch (e) {
+      return true;
+    }
+  });
   const [boxingKindFilter, setBoxingKindFilter] = useState<'all' | 'perm' | 'strong'>(() => {
     try {
       const v = localStorage.getItem('tt_boxingKindFilter');
@@ -182,6 +192,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
       'https://kite.zerodha.com/oms/instruments/historical/{instrument_token}/{interval}?user_id=GW0461&oi=1&from={from}&to={to}'
   );
   const [showConfigPanel, setShowConfigPanel] = useState<boolean>(false);
+  const [wallsModalOpen, setWallsModalOpen] = useState<boolean>(false);
 
   // Live Polling State
   const [isLivePolling, setIsLivePolling] = useState<boolean>(() => {
@@ -245,6 +256,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
 
   // Canvas Refs & Async Tracking
   const chartContainerRef = useRef<HTMLDivElement>(null);
+  const overlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
@@ -481,12 +493,18 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
     return computeBoxBreakouts(matrix, dateFrom, dateTo, priceLo, priceHi, orb, minHighlight);
   }, [matrix, dateFrom, dateTo, priceLo, priceHi, orb, minHighlight]);
 
+  // Active Candle Data
+  const displayCandle = useMemo(() => {
+    return activeHoverCandle || (candles.length > 0 ? candles[candles.length - 1] : null);
+  }, [activeHoverCandle, candles]);
+
   // Matrix Aspect calculations for Hovered Date & Price (matching closest Main/Strong Wall + Boxing Info)
   const hoverAstroInfo = useMemo(() => {
-    if (!activeHoverCandle) return null;
+    const targetCandle = displayCandle;
+    if (!targetCandle) return null;
 
-    const dateStr = activeHoverCandle.timeStr.slice(0, 10);
-    const hoverPrice = activeHoverCandle.close;
+    const dateStr = targetCandle.timeStr.slice(0, 10);
+    const hoverPrice = targetCandle.close;
 
     // Find closest wall among Main Walls (permWalls) and Strong Walls (strongWalls)
     const candidateWalls: Array<{ price: number; type: 'Main Wall' | 'Strong Wall' }> = [
@@ -548,8 +566,8 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
       (bd) => bd.date === dateStr || bd.snappedFrom === dateStr
     );
     const nextBoxingDate = rawBoxingDates.find((bd) => bd.date > dateStr);
-    const candleWallMatches = (matchedBoxingDate && activeHoverCandle)
-      ? checkCandleWallMatch(activeHoverCandle, matchedBoxingDate)
+    const candleWallMatches = (matchedBoxingDate && targetCandle)
+      ? checkCandleWallMatch(targetCandle, matchedBoxingDate)
       : [];
 
     // 3. Price Boxing & Gann Box Channel Info
@@ -637,7 +655,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
       priceBoxingDetails,
       candleWallMatches
     };
-  }, [activeHoverCandle, matrix, permWalls, strongWalls, orb, rawBoxingDates, gannBoxes]);
+  }, [displayCandle, matrix, permWalls, strongWalls, orb, rawBoxingDates, gannBoxes]);
 
   // Extract Critical Astro Signals
   const rawAstroEvents = useMemo(() => {
@@ -667,6 +685,282 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
       })
       .sort((a, b) => a.date.localeCompare(b.date));
   }, [rawAstroEvents, astroTierFilter, astroDirectionFilter]);
+
+  // Pointing Arrow Leader Line Overlay Redraw Logic
+  const redrawLeaderCallouts = useCallback(() => {
+    const canvas = overlayCanvasRef.current;
+    const chart = chartRef.current;
+    const candleSeries = candleSeriesRef.current;
+    const container = chartContainerRef.current;
+
+    if (!canvas || !container || !chart || !candleSeries) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const width = container.clientWidth;
+    const height = container.clientHeight;
+
+    if (canvas.width !== width * dpr || canvas.height !== height * dpr) {
+      canvas.width = width * dpr;
+      canvas.height = height * dpr;
+    }
+
+    ctx.save();
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, width, height);
+
+    if (!showPointingArrows) {
+      ctx.restore();
+      return;
+    }
+
+    const dateToTimestamp = new Map<string, Time>();
+    candlesRef.current.forEach((c) => {
+      const d = new Date(c.time * 1000);
+      const dStrUtc = d.toISOString().split('T')[0];
+      const dStrLocal = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      if (!dateToTimestamp.has(dStrUtc)) dateToTimestamp.set(dStrUtc, c.time as Time);
+      if (!dateToTimestamp.has(dStrLocal)) dateToTimestamp.set(dStrLocal, c.time as Time);
+    });
+
+    interface CalloutCandidate {
+      id: string;
+      time: Time;
+      price: number;
+      title: string;
+      subtitle: string;
+      tierLabel: string;
+      borderColor: string;
+      bgTint: string;
+      isUp: boolean;
+    }
+
+    const candidateList: CalloutCandidate[] = [];
+
+    // 1. Astro departure signals
+    if (showAstroSignals) {
+      filteredAstroEvents.forEach((ev, idx) => {
+        const matchTime = dateToTimestamp.get(ev.date);
+        if (matchTime) {
+          const isGold = ev.sig?.tier === 'gold';
+          const isSilver = ev.sig?.tier === 'silver';
+          const tierLabel = isGold ? '🥇 GOLD' : isSilver ? '🥈 SILVER' : '🥉 BRONZE';
+          const isUp = ev.sig?.direction === 'UP';
+          const color = isGold ? '#f59e0b' : isSilver ? '#06b6d4' : '#a855f7';
+          const bgTint = isGold ? 'rgba(245, 158, 11, 0.22)' : isSilver ? 'rgba(6, 182, 212, 0.22)' : 'rgba(168, 85, 247, 0.22)';
+
+          candidateList.push({
+            id: `astro_${ev.date}_${idx}`,
+            time: matchTime,
+            price: ev.price,
+            title: `${tierLabel} @ ${ev.price.toLocaleString()}`,
+            subtitle: `${ev.body} ${ev.aspect}`,
+            tierLabel: isUp ? '↑ BULL DEPART' : '↓ BEAR DEPART',
+            borderColor: color,
+            bgTint,
+            isUp
+          });
+        }
+      });
+    }
+
+    // 2. Boxing Date Callouts (All boxing dates moved to leader callout boxes)
+    if (showBoxingDates) {
+      filteredBoxingDates.forEach((bd, idx) => {
+        const matchTime = dateToTimestamp.get(bd.date);
+        if (matchTime) {
+          const candleOnDate = candlesRef.current.find((c) => c.time === matchTime);
+          const wallMatches = candleOnDate ? checkCandleWallMatch(candleOnDate, bd) : [];
+          const hasWallMatch = wallMatches.length > 0;
+          const isPerm = bd.kind === 'perm';
+          const defaultPrice = candleOnDate ? (candleOnDate.high + candleOnDate.low) / 2 : 24000;
+          const targetPrice = wallMatches[0]?.matchedPrice || (isPerm ? (bd.perm[0] ?? bd.strong[0]) : (bd.strong[0] ?? bd.perm[0])) || defaultPrice;
+
+          if (hasWallMatch) {
+            const matchedPriceStr = wallMatches.map((m) => `${m.matchedPrice.toLocaleString()} (${m.angleLabel || '0°'})`).join(', ');
+            candidateList.push({
+              id: `box_match_${bd.date}_${idx}`,
+              time: matchTime,
+              price: targetPrice,
+              title: `⭐ PRICE-DATE MATCH`,
+              subtitle: matchedPriceStr,
+              tierLabel: `BOX ${bd.date.slice(5)}`,
+              borderColor: '#f59e0b',
+              bgTint: 'rgba(245, 158, 11, 0.25)',
+              isUp: true
+            });
+          } else {
+            const color = isPerm ? '#f59e0b' : '#14b8a6';
+            const bgTint = isPerm ? 'rgba(245, 158, 11, 0.2)' : 'rgba(20, 184, 166, 0.2)';
+            const wallList = isPerm ? bd.perm : bd.strong;
+            const subtitleStr = wallList.length > 0
+              ? `Walls: ${wallList.slice(0, 3).map((w) => w.toLocaleString()).join(', ')}${wallList.length > 3 ? '...' : ''}`
+              : `36H Cycle Date (${bd.date.slice(5)})`;
+
+            candidateList.push({
+              id: `box_${bd.date}_${idx}`,
+              time: matchTime,
+              price: targetPrice,
+              title: `🥊 ${isPerm ? 'PERM' : 'STRONG'} 36H BOXING`,
+              subtitle: subtitleStr,
+              tierLabel: `BOX ${bd.date.slice(5)}`,
+              borderColor: color,
+              bgTint,
+              isUp: isPerm
+            });
+          }
+        }
+      });
+    }
+
+    interface PlacedCallout {
+      x: number;
+      y: number;
+      boxX: number;
+      boxY: number;
+      w: number;
+      h: number;
+      cand: CalloutCandidate;
+      position: 'above' | 'below';
+    }
+
+    const placed: PlacedCallout[] = [];
+    const minOverlapX = 135;
+
+    candidateList.forEach((cand) => {
+      const xCoord = chart.timeScale().timeToCoordinate(cand.time);
+      const yCoord = candleSeries.priceToCoordinate(cand.price);
+
+      if (xCoord === null || yCoord === null) return;
+      if (xCoord < 15 || xCoord > width - 15) return;
+
+      const position: 'above' | 'below' = yCoord > height * 0.4 ? 'above' : 'below';
+
+      let step = 0;
+      let boxY = position === 'above' ? yCoord - 70 : yCoord + 70;
+
+      let overlap = true;
+      let maxLoops = 6;
+      while (overlap && maxLoops > 0) {
+        overlap = false;
+        for (const p of placed) {
+          if (Math.abs(p.x - xCoord) < minOverlapX && Math.abs(p.boxY - boxY) < 32) {
+            overlap = true;
+            step++;
+            boxY = position === 'above' ? yCoord - (70 + step * 36) : yCoord + (70 + step * 36);
+            break;
+          }
+        }
+        maxLoops--;
+      }
+
+      const clampedBoxY = Math.max(30, Math.min(height - 40, boxY));
+      const boxX = Math.max(75, Math.min(width - 75, xCoord));
+
+      placed.push({
+        x: xCoord,
+        y: yCoord,
+        boxX,
+        boxY: clampedBoxY,
+        w: 135,
+        h: 36,
+        cand,
+        position
+      });
+    });
+
+    // Render Callouts
+    placed.forEach(({ x, y, boxX, boxY, w, h, cand, position }) => {
+      const boxLeft = boxX - w / 2;
+      const boxTop = boxY - h / 2;
+      const lineAttachY = position === 'above' ? boxTop + h : boxTop;
+
+      const aSize = 6;
+      const arrowLength = 9;
+      const arrowBaseY = position === 'above' ? y - arrowLength : y + arrowLength;
+
+      // 1. Dashed Leader Line from Callout Box to Arrow Base
+      ctx.beginPath();
+      ctx.setLineDash([4, 3]);
+      ctx.strokeStyle = cand.borderColor;
+      ctx.lineWidth = 1.3;
+      ctx.moveTo(boxX, lineAttachY);
+      ctx.lineTo(x, arrowBaseY);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // 2. Pointing Arrowhead directly touching target (x, y)
+      ctx.beginPath();
+      ctx.moveTo(x, y); // Arrow tip touches the exact candle/price point (x, y)
+      if (position === 'above') {
+        // Box is ABOVE target -> Arrow points DOWN towards (x, y)
+        ctx.lineTo(x - aSize, y - arrowLength);
+        ctx.lineTo(x + aSize, y - arrowLength);
+      } else {
+        // Box is BELOW target -> Arrow points UP towards (x, y)
+        ctx.lineTo(x - aSize, y + arrowLength);
+        ctx.lineTo(x + aSize, y + arrowLength);
+      }
+      ctx.closePath();
+      ctx.fillStyle = cand.borderColor;
+      ctx.fill();
+
+      // 3. Glowing Center Anchor Dot at exact target coordinate (x, y)
+      ctx.beginPath();
+      ctx.arc(x, y, 2.5, 0, Math.PI * 2);
+      ctx.fillStyle = '#090e1a';
+      ctx.fill();
+      ctx.lineWidth = 1.2;
+      ctx.strokeStyle = cand.borderColor;
+      ctx.stroke();
+
+      // Rounded Callout Box Background
+      ctx.save();
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.7)';
+      ctx.shadowBlur = 10;
+      ctx.shadowOffsetY = 3;
+
+      ctx.beginPath();
+      const r = 6;
+      ctx.moveTo(boxLeft + r, boxTop);
+      ctx.lineTo(boxLeft + w - r, boxTop);
+      ctx.quadraticCurveTo(boxLeft + w, boxTop, boxLeft + w, boxTop + r);
+      ctx.lineTo(boxLeft + w, boxTop + h - r);
+      ctx.quadraticCurveTo(boxLeft + w, boxTop + h, boxLeft + w - r, boxTop + h);
+      ctx.lineTo(boxLeft + r, boxTop + h);
+      ctx.quadraticCurveTo(boxLeft, boxTop + h, boxLeft, boxTop + h - r);
+      ctx.lineTo(boxLeft, boxTop + r);
+      ctx.quadraticCurveTo(boxLeft, boxTop, boxLeft + r, boxTop);
+      ctx.closePath();
+
+      ctx.fillStyle = '#090e1a';
+      ctx.fill();
+      ctx.restore();
+
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = cand.borderColor;
+      ctx.stroke();
+
+      // Text inside Callout Box
+      ctx.font = 'bold 10px monospace';
+      ctx.fillStyle = cand.borderColor;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillText(cand.title, boxX, boxTop + 4);
+
+      ctx.font = '9.5px monospace';
+      ctx.fillStyle = '#cbd5e1';
+      ctx.fillText(cand.subtitle, boxX, boxTop + 18);
+    });
+
+    ctx.restore();
+  }, [showPointingArrows, showAstroSignals, showBoxingDates, filteredAstroEvents, filteredBoxingDates]);
+
+  useEffect(() => {
+    requestAnimationFrame(redrawLeaderCallouts);
+  }, [redrawLeaderCallouts]);
 
   // Construct Kite Live URL string for preview/fetch
   const constructedKiteUrl = useMemo(() => {
@@ -781,7 +1075,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
     if (!chartContainerRef.current) return;
 
     const container = chartContainerRef.current;
-    const chartHeight = isPopout ? Math.max(620, window.innerHeight - 240) : 520;
+    const initialHeight = container.clientHeight > 100 ? container.clientHeight : (isPopout ? Math.max(680, window.innerHeight - 100) : 600);
 
     const chart = createChart(container, {
       layout: {
@@ -816,7 +1110,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
         pinch: true
       },
       width: container.clientWidth,
-      height: chartHeight
+      height: initialHeight
     });
 
     chartRef.current = chart;
@@ -858,10 +1152,11 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
           loadOlderHistory();
         }
       }
+      requestAnimationFrame(redrawLeaderCallouts);
     };
     chart.timeScale().subscribeVisibleLogicalRangeChange(handleLogicalRangeChange);
 
-    // Subscribe to crosshair move for tooltip
+    // Subscribe to crosshair move for tooltip & overlay callout redraw
     chart.subscribeCrosshairMove((param) => {
       if (param.time && param.seriesData.get(candleSeries)) {
         const matched = candlesRef.current.find((c) => c.time === param.time);
@@ -876,25 +1171,34 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
           setCrosshairPoint(null);
         }
       }
+      requestAnimationFrame(redrawLeaderCallouts);
     });
 
     // Resize observer
     const handleResize = () => {
       if (container && chartRef.current) {
-        const updatedHeight = isPopout ? Math.max(620, window.innerHeight - 240) : 520;
+        const clientWidth = container.clientWidth;
+        const clientHeight = container.clientHeight;
+        const fallbackH = isPopout ? Math.max(680, window.innerHeight - 100) : Math.max(600, window.innerHeight - 140);
         chartRef.current.applyOptions({
-          width: container.clientWidth,
-          height: updatedHeight
+          width: clientWidth,
+          height: clientHeight > 100 ? clientHeight : fallbackH
         });
+        requestAnimationFrame(redrawLeaderCallouts);
       }
     };
 
+    const resizeObserver = new ResizeObserver(() => {
+      handleResize();
+    });
+    resizeObserver.observe(container);
     window.addEventListener('resize', handleResize);
 
     // Mark as first load when chart instance is created
     isFirstLoadRef.current = true;
 
     return () => {
+      resizeObserver.disconnect();
       window.removeEventListener('resize', handleResize);
       priceLinesRef.current = [];
       markersPrimitiveRef.current = null;
@@ -986,7 +1290,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
     const hasAstroMarkers = showAstroSignals && filteredAstroEvents.length > 0;
     const hasBoxingMarkers = showBoxingDates && filteredBoxingDates.length > 0;
 
-    if ((hasAstroMarkers || hasBoxingMarkers) && candles.length > 0) {
+    if (!showPointingArrows && (hasAstroMarkers || hasBoxingMarkers) && candles.length > 0) {
       const dateToTimestamp = new Map<string, Time>();
 
       candles.forEach((c) => {
@@ -1021,7 +1325,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
               position: position,
               color: color,
               shape: shape,
-              text: `${tierLabel} ${ev.price} (${ev.body})`
+              text: showPointingArrows ? '' : `${tierLabel} ${ev.price} (${ev.body})`
             });
           }
         });
@@ -1040,7 +1344,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
 
             if (hasWallMatch) {
               const matchedPriceStr = wallMatches.map((m) => `${m.matchedPrice.toLocaleString()} (${m.angleLabel || '0°'})`).join(', ');
-              const boxLabel = `⭐ MATCH [${matchedPriceStr}]`;
+              const boxLabel = showPointingArrows ? '' : `⭐ MATCH [${matchedPriceStr}]`;
               const boxColor = '#f59e0b'; // Gold highlight
 
               if (existing) {
@@ -1048,7 +1352,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
                   ...existing,
                   color: '#f59e0b',
                   shape: 'square',
-                  text: `⭐ ${existing.text} | MATCH ${matchedPriceStr}`
+                  text: showPointingArrows ? '' : `⭐ ${existing.text} | MATCH ${matchedPriceStr}`
                 });
               } else {
                 timeToMarker.set(matchTime, {
@@ -1062,13 +1366,13 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
             } else {
               const firstWall = isPerm ? (bd.perm[0] ?? bd.strong[0]) : (bd.strong[0] ?? bd.perm[0]);
               const wallStr = firstWall ? `@ ${firstWall.toLocaleString()}` : '';
-              const boxLabel = `🥊 BOX ${isPerm ? 'PERM' : 'STR'}${wallStr ? ` ${wallStr}` : ''}`;
+              const boxLabel = showPointingArrows ? '' : `🥊 BOX ${isPerm ? 'PERM' : 'STR'}${wallStr ? ` ${wallStr}` : ''}`;
               const boxColor = isPerm ? '#f59e0b' : '#14b8a6';
 
               if (existing) {
                 timeToMarker.set(matchTime, {
                   ...existing,
-                  text: `${existing.text} | ${boxLabel} (${bd.date.slice(5)})`
+                  text: showPointingArrows ? '' : `${existing.text} | ${boxLabel} (${bd.date.slice(5)})`
                 });
               } else {
                 timeToMarker.set(matchTime, {
@@ -1076,7 +1380,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
                   position: isPerm ? 'aboveBar' : 'belowBar',
                   color: boxColor,
                   shape: isPerm ? 'square' : 'circle',
-                  text: `${boxLabel} (${bd.date.slice(5)})`
+                  text: showPointingArrows ? '' : `${boxLabel} (${bd.date.slice(5)})`
                 });
               }
             }
@@ -1197,18 +1501,17 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
 
   // Last candle for display stats
   const latestCandle = candles[candles.length - 1];
-  const displayCandle = activeHoverCandle || latestCandle;
 
   return (
-    <div className={isPopout ? "fixed inset-0 z-50 bg-[#070a14] p-4 sm:p-6 overflow-y-auto space-y-4 shadow-2xl animate-in fade-in duration-200" : "space-y-4"}>
+    <div className={isPopout ? "fixed inset-0 z-50 bg-[#070a14] p-2 sm:p-3 overflow-y-auto flex flex-col h-screen space-y-2 shadow-2xl animate-in fade-in duration-200" : "flex-1 flex flex-col h-full min-h-0 space-y-2 overflow-hidden"}>
       {/* Top Controls Bar */}
-      <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3 shadow-xl backdrop-blur-md">
-        <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-2 sm:p-2.5 shadow-xl backdrop-blur-md shrink-0">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           {/* Zerodha Data Source Indicator & Config Button */}
           <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-400 text-slate-950 rounded-md font-mono text-xs font-bold shadow-md shadow-amber-400/20">
+            <div className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-400 text-slate-950 rounded-md font-mono text-xs font-bold shadow-md shadow-amber-400/20">
               <Key className="w-3.5 h-3.5" />
-              <span>Zerodha Kite Engine</span>
+              <span>Zerodha Kite</span>
             </div>
 
             <button
@@ -1217,7 +1520,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
                 if (!isLivePolling) loadCandles(true);
               }}
               title={isLivePolling ? `Live Auto-Sync Active (Every ${pollIntervalSec}s)` : "Click to enable Live Auto-Sync"}
-              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md font-mono text-xs font-bold transition-all border ${
+              className={`flex items-center gap-1.5 px-2 py-1 rounded-md font-mono text-xs font-bold transition-all border ${
                 isLivePolling
                   ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40 shadow-sm shadow-emerald-500/10'
                   : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-200'
@@ -1230,7 +1533,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
             <select
               value={pollIntervalSec}
               onChange={(e) => setPollIntervalSec(Math.max(1, Number(e.target.value)))}
-              className="bg-slate-950 border border-slate-800 text-amber-300 font-mono text-xs font-semibold rounded px-2 py-1.5 focus:outline-none focus:border-amber-500/50 cursor-pointer"
+              className="bg-slate-950 border border-slate-800 text-amber-300 font-mono text-xs font-semibold rounded px-1.5 py-1 focus:outline-none focus:border-amber-500/50 cursor-pointer"
               title="Set Auto-Sync Refresh Interval"
             >
               <option value={1}>1s</option>
@@ -1246,20 +1549,29 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
             <button
               onClick={() => loadCandles(false)}
               title="Manual Refresh Market Candles"
-              className="p-1.5 text-slate-400 hover:text-amber-300 rounded hover:bg-slate-950 border border-slate-800 transition-colors"
+              className="p-1 text-slate-400 hover:text-amber-300 rounded hover:bg-slate-950 border border-slate-800 transition-colors"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin text-amber-400' : ''}`} />
             </button>
 
             <button
               onClick={() => setShowConfigPanel(!showConfigPanel)}
-              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md font-mono text-xs font-semibold border transition-all ${
+              className={`flex items-center gap-1 px-2 py-1 rounded-md font-mono text-xs font-semibold border transition-all ${
                 showConfigPanel
                   ? 'bg-slate-800 text-amber-300 border-amber-500/50'
                   : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-200'
               }`}
             >
-              <span>{showConfigPanel ? 'Close Config' : 'API / Token Config'}</span>
+              <span>{showConfigPanel ? 'Close Config' : 'API Config'}</span>
+            </button>
+
+            <button
+              onClick={() => setWallsModalOpen(true)}
+              title="Open Matrix Planetary Walls & Aspect Catalog"
+              className="flex items-center gap-1.5 px-2 py-1 rounded-md font-mono text-xs font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/30 hover:bg-amber-500/20 transition-all"
+            >
+              <Grid3X3 className="w-3.5 h-3.5 text-amber-400" />
+              <span>Matrix Walls</span>
             </button>
           </div>
 
@@ -1436,6 +1748,19 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
             </div>
 
             <button
+              onClick={() => setShowPointingArrows(!showPointingArrows)}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md font-mono text-[11px] font-semibold border transition-all ${
+                showPointingArrows
+                  ? 'bg-amber-400/20 text-amber-300 border-amber-400/40'
+                  : 'bg-slate-900 text-slate-500 border-slate-800'
+              }`}
+              title="Toggle Distance-Offset Pointing Arrows & Leader Lines"
+            >
+              <Target className="w-3 h-3 text-amber-400" />
+              Leader Arrows
+            </button>
+
+            <button
               onClick={loadCandles}
               disabled={isLoading}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-mono text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-300 transition-all shadow-md shadow-amber-400/20 disabled:opacity-50"
@@ -1561,16 +1886,72 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
         </div>
       )}
 
-      {/* Active Candle Hover Info Header Bar */}
+      {/* Main Chart Canvas Container */}
+      <div className="relative bg-slate-950 border border-slate-800 rounded-xl overflow-hidden shadow-2xl flex-1 h-full min-h-[560px] w-full flex flex-col">
+        <div
+          ref={chartContainerRef}
+          className="w-full flex-1 h-full min-h-[560px]"
+        />
+
+        {/* Distance-Offset Leader Line Callout Canvas Overlay */}
+        <canvas
+          ref={overlayCanvasRef}
+          className="absolute inset-0 pointer-events-none z-10 w-full h-full"
+        />
+
+        {/* Loading Older History Badge */}
+        {isLoadingOlder && (
+          <div className="absolute top-3 right-3 z-20 bg-amber-500/90 text-slate-950 px-3 py-1.5 rounded-lg font-mono text-xs font-bold flex items-center gap-2 shadow-lg backdrop-blur-md animate-pulse">
+            <RefreshCw className="w-3.5 h-3.5 animate-spin text-slate-950" />
+            Loading Older History...
+          </div>
+        )}
+
+        {/* History Loaded Indicator */}
+        {historyLoadedCount > 0 && !isLoadingOlder && (
+          <div className="absolute top-3 right-3 z-10 bg-slate-900/80 border border-teal-500/40 text-teal-300 px-2.5 py-1 rounded-lg font-mono text-[11px] flex items-center gap-1.5 shadow-lg backdrop-blur-md">
+            <History className="w-3.5 h-3.5 text-teal-400" />
+            <span>+{historyLoadedCount} History Bars Loaded</span>
+          </div>
+        )}
+
+        {/* Floating Quick Legend Overlay */}
+        <div className="absolute top-3 left-3 bg-slate-900/90 border border-slate-800 backdrop-blur-md rounded-lg p-2.5 font-mono text-[11px] space-y-1.5 shadow-xl max-w-xs pointer-events-none">
+          <div className="text-amber-300 font-bold flex items-center gap-1.5">
+            <CandlestickChart className="w-3.5 h-3.5 text-amber-400" />
+            Planetary S/R Chart Engine
+          </div>
+          <div className="flex items-center gap-2 text-slate-300">
+            <span className="w-3 h-1 bg-amber-400 rounded-full" />
+            <span>Perm Walls (≥90%): {permWalls.length} active</span>
+          </div>
+          <div className="flex items-center gap-2 text-slate-300">
+            <span className="w-3 h-0.5 bg-slate-400 border-dashed border-b border-slate-400" />
+            <span>Strong Walls (50-89%): {strongWalls.length} active</span>
+          </div>
+          <div className="flex items-center gap-2 text-purple-300">
+            <span className="w-2 h-2 rounded-full bg-purple-500" />
+            <span>Astro Departure Markers: {filteredAstroEvents.length}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Active Candle Hover Info & Planetary Wall Tooltip Bar */}
       {displayCandle && (
-        <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3 space-y-2 font-mono text-xs shadow-lg">
+        <div className="bg-slate-900/95 border border-slate-800 rounded-xl p-3 sm:p-3.5 space-y-2 font-mono text-xs shadow-xl shrink-0">
+          {/* Header Row: Date & Time, OHLCV, Change %, Status */}
           <div className="flex flex-wrap items-center justify-between gap-4">
-            <div className="flex items-center gap-2 text-slate-400">
-              <Clock className="w-3.5 h-3.5 text-amber-400" />
-              <span className="text-amber-200 font-bold">{displayCandle.timeStr}</span>
+            <div className="flex items-center gap-2">
+              <Clock className="w-4 h-4 text-amber-400" />
+              <span className="text-amber-200 font-bold text-xs sm:text-sm">{displayCandle.timeStr}</span>
+              <span className={`text-[10px] px-2 py-0.5 rounded font-bold uppercase tracking-wider ${
+                activeHoverCandle ? 'bg-amber-400/20 text-amber-300 border border-amber-400/30' : 'bg-slate-800 text-slate-400'
+              }`}>
+                {activeHoverCandle ? 'Active Hover' : 'Latest Market Candle'}
+              </span>
             </div>
 
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-3 sm:gap-5 flex-wrap">
               <div>
                 <span className="text-slate-500 text-[10px] uppercase block">Open</span>
                 <span className="text-slate-200 font-semibold">{displayCandle.open.toLocaleString()}</span>
@@ -1609,15 +1990,15 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
             </div>
 
             {lastFetchedInfo && (
-              <div className="text-[11px] text-teal-300/80 bg-teal-500/10 px-2 py-0.5 rounded border border-teal-500/20">
+              <div className="text-[11px] text-teal-300/80 bg-teal-500/10 px-2.5 py-1 rounded border border-teal-500/20">
                 {lastFetchedInfo}
               </div>
             )}
           </div>
 
-          {/* Matrix Planet Aspects & Boxing Info Row on Hover */}
+          {/* Matrix Planet Aspects & Boxing Info Row */}
           {hoverAstroInfo && (
-            <div className="border-t border-slate-800 pt-2 space-y-2 font-mono text-[11px]">
+            <div className="border-t border-slate-800/80 pt-2.5 space-y-2 font-mono text-[11px]">
               {/* Special Price-Date Box Wall Match Highlight Callout */}
               {hoverAstroInfo.candleWallMatches && hoverAstroInfo.candleWallMatches.length > 0 && (
                 <div className="p-2 rounded-lg bg-gradient-to-r from-amber-500/25 via-amber-500/15 to-slate-900 border border-amber-400 text-xs flex flex-wrap items-center justify-between gap-2 shadow-md">
@@ -1756,143 +2137,18 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
         </div>
       )}
 
-      {/* Main Chart Canvas Container */}
-      <div className="relative bg-slate-950 border border-slate-800 rounded-xl overflow-hidden shadow-2xl">
-        <div
-          ref={chartContainerRef}
-          className={`w-full ${isPopout ? 'h-[calc(100vh-250px)] min-h-[620px]' : 'h-[520px]'}`}
-        />
-
-        {/* Loading Older History Badge */}
-        {isLoadingOlder && (
-          <div className="absolute top-3 right-3 z-20 bg-amber-500/90 text-slate-950 px-3 py-1.5 rounded-lg font-mono text-xs font-bold flex items-center gap-2 shadow-lg backdrop-blur-md animate-pulse">
-            <RefreshCw className="w-3.5 h-3.5 animate-spin text-slate-950" />
-            Loading Older History...
-          </div>
-        )}
-
-        {/* History Loaded Indicator */}
-        {historyLoadedCount > 0 && !isLoadingOlder && (
-          <div className="absolute top-3 right-3 z-10 bg-slate-900/80 border border-teal-500/40 text-teal-300 px-2.5 py-1 rounded-lg font-mono text-[11px] flex items-center gap-1.5 shadow-lg backdrop-blur-md">
-            <History className="w-3.5 h-3.5 text-teal-400" />
-            <span>+{historyLoadedCount} History Bars Loaded</span>
-          </div>
-        )}
-
-        {/* Floating Quick Legend Overlay */}
-        <div className="absolute top-3 left-3 bg-slate-900/90 border border-slate-800 backdrop-blur-md rounded-lg p-2.5 font-mono text-[11px] space-y-1.5 shadow-xl max-w-xs pointer-events-none">
-          <div className="text-amber-300 font-bold flex items-center gap-1.5">
-            <CandlestickChart className="w-3.5 h-3.5 text-amber-400" />
-            Planetary S/R Chart Engine
-          </div>
-          <div className="flex items-center gap-2 text-slate-300">
-            <span className="w-3 h-1 bg-amber-400 rounded-full" />
-            <span>Perm Walls (≥90%): {permWalls.length} active</span>
-          </div>
-          <div className="flex items-center gap-2 text-slate-300">
-            <span className="w-3 h-0.5 bg-slate-400 border-dashed border-b border-slate-400" />
-            <span>Strong Walls (50-89%): {strongWalls.length} active</span>
-          </div>
-          <div className="flex items-center gap-2 text-purple-300">
-            <span className="w-2 h-2 rounded-full bg-purple-500" />
-            <span>Astro Departure Markers: {filteredAstroEvents.length}</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Bottom Summary Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {/* Permanent Walls Card */}
-        <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-4 space-y-2">
-          <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-            <h4 className="font-mono text-xs font-bold text-amber-200 flex items-center gap-1.5 uppercase">
-              <Shield className="w-4 h-4 text-amber-400" />
-              Permanent S/R Walls (≥90%)
-            </h4>
-            <span className="text-[10px] font-mono bg-amber-500/10 text-amber-300 px-2 py-0.5 rounded border border-amber-500/20">
-              {permWalls.length} Levels
-            </span>
-          </div>
-          <div className="flex flex-wrap gap-1.5 pt-1">
-            {permWalls.length > 0 ? (
-              permWalls.map((price) => (
-                <span
-                  key={price}
-                  className="px-2 py-1 rounded bg-amber-500/10 text-amber-300 border border-amber-500/30 font-mono text-xs font-bold"
-                >
-                  {price.toLocaleString()}
-                </span>
-              ))
-            ) : (
-              <span className="text-xs font-mono text-slate-500">No Permanent Walls in this range</span>
-            )}
-          </div>
-        </div>
-
-        {/* Strong Walls Card */}
-        <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-4 space-y-2">
-          <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-            <h4 className="font-mono text-xs font-bold text-slate-200 flex items-center gap-1.5 uppercase">
-              <Layers className="w-4 h-4 text-slate-400" />
-              Strong Walls (50-89%)
-            </h4>
-            <span className="text-[10px] font-mono bg-slate-800 text-slate-300 px-2 py-0.5 rounded border border-slate-700">
-              {strongWalls.length} Levels
-            </span>
-          </div>
-          <div className="flex flex-wrap gap-1.5 pt-1 max-h-24 overflow-y-auto no-scrollbar">
-            {strongWalls.length > 0 ? (
-              strongWalls.map((price) => (
-                <span
-                  key={price}
-                  className="px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700 font-mono text-xs"
-                >
-                  {price.toLocaleString()}
-                </span>
-              ))
-            ) : (
-              <span className="text-xs font-mono text-slate-500">No Strong Walls in this range</span>
-            )}
-          </div>
-        </div>
-
-        {/* Critical Signals Card */}
-        <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-4 space-y-2">
-          <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-            <h4 className="font-mono text-xs font-bold text-purple-200 flex items-center gap-1.5 uppercase">
-              <Sparkles className="w-4 h-4 text-purple-400" />
-              Active Astro Departure Signals
-            </h4>
-            <span className="text-[10px] font-mono bg-purple-500/10 text-purple-300 px-2 py-0.5 rounded border border-purple-500/20">
-              {filteredAstroEvents.length} Signals
-            </span>
-          </div>
-          <div className="space-y-1.5 pt-1 max-h-24 overflow-y-auto no-scrollbar font-mono text-xs text-slate-300">
-            {filteredAstroEvents.length > 0 ? (
-              filteredAstroEvents.slice(0, 6).map((e, idx) => (
-                <div key={idx} className="flex items-center justify-between text-[11px] border-b border-slate-800/50 pb-1">
-                  <div className="flex items-center gap-1.5">
-                    <span className={`px-1 py-0.2 rounded text-[9px] font-bold ${
-                      e.sig?.tier === 'gold' ? 'bg-amber-400/20 text-amber-300 border border-amber-400/30' :
-                      e.sig?.tier === 'silver' ? 'bg-cyan-400/20 text-cyan-300 border border-cyan-400/30' :
-                      'bg-orange-400/20 text-orange-300 border border-orange-400/30'
-                    }`}>
-                      {e.sig?.tier?.toUpperCase()}
-                    </span>
-                    <span className="text-purple-300 font-bold">{e.date}</span>
-                  </div>
-                  <span className="text-slate-400">{e.body} {e.aspect}</span>
-                  <span className={`font-semibold ${e.sig?.direction === 'UP' ? 'text-emerald-400' : 'text-rose-400'}`}>
-                    {e.sig?.direction === 'UP' ? '↑' : '↓'} @{e.price}
-                  </span>
-                </div>
-              ))
-            ) : (
-              <span className="text-xs font-mono text-slate-500">No signals match current filter</span>
-            )}
-          </div>
-        </div>
-      </div>
+      {/* Matrix Planetary Walls & Aspect Catalog Pop Box Modal */}
+      <MatrixWallsModal
+        isOpen={wallsModalOpen}
+        onClose={() => setWallsModalOpen(false)}
+        matrix={matrix}
+        priceLo={priceLo}
+        priceHi={priceHi}
+        dateFrom={dateFrom}
+        dateTo={dateTo}
+        orb={orb}
+        minHighlight={minHighlight}
+      />
     </div>
   );
 };

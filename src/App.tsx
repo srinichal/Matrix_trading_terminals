@@ -1,7 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { Header } from './components/Header';
-import { ControlsBar } from './components/ControlsBar';
-import { Navigation, TabType } from './components/Navigation';
+import { Sidebar } from './components/Sidebar';
 import { OverviewTab } from './components/OverviewTab';
 import { MatrixTab } from './components/MatrixTab';
 import { BoxBreakoutsTab } from './components/BoxBreakoutsTab';
@@ -9,9 +7,24 @@ import { BoxingDatesTab } from './components/BoxingDatesTab';
 import { IntradayTab } from './components/IntradayTab';
 import { TradingTerminalTab } from './components/TradingTerminalTab';
 import { SignalsCatalogModal } from './components/SignalsCatalogModal';
+import { MatrixWallsModal } from './components/MatrixWallsModal';
+import { TabType } from './components/Navigation';
 import { MarketPreset } from './types';
 import { computeMatrix, scanCriticalDates, computeBoxBreakouts } from './lib/matrix';
 import { ALL_ASPECTS, MAJOR_ASPECTS } from './lib/astronomy';
+import {
+  PanelLeftOpen,
+  Sparkles,
+  FileSpreadsheet,
+  Play,
+  Layers,
+  CandlestickChart,
+  CalendarRange,
+  Box,
+  Grid3X3,
+  LayoutDashboard,
+  Target
+} from 'lucide-react';
 
 export default function App() {
   // Load initial computed parameters from LocalStorage if present
@@ -46,7 +59,16 @@ export default function App() {
     };
   }, []);
 
-  // Pending input states (edited freely in ControlsBar without triggering re-computation)
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('app_sidebarCollapsed');
+      return saved === 'true';
+    } catch (e) {
+      return false;
+    }
+  });
+
+  // Pending input states
   const [inputDateFrom, setInputDateFrom] = useState<string>(initialComputedParams.dateFrom);
   const [inputDateTo, setInputDateTo] = useState<string>(initialComputedParams.dateTo);
   const [inputPriceLo, setInputPriceLo] = useState<number>(initialComputedParams.priceLo);
@@ -56,7 +78,7 @@ export default function App() {
   const [inputMinHighlight, setInputMinHighlight] = useState<number>(initialComputedParams.minHighlight);
   const [inputAspectMode, setInputAspectMode] = useState<'all' | 'major'>(initialComputedParams.aspectMode);
 
-  // Active computed parameters (used for computeMatrix & all tabs)
+  // Active computed parameters
   const [computedParams, setComputedParams] = useState(initialComputedParams);
 
   const [matrixOrbOverride, setMatrixOrbOverride] = useState<number | null>(() => {
@@ -75,7 +97,7 @@ export default function App() {
         return saved as TabType;
       }
     } catch (e) {}
-    return 'boxingdates';
+    return 'terminal';
   });
 
   const [focusDate, setFocusDate] = useState<string>(() => {
@@ -95,6 +117,7 @@ export default function App() {
   });
 
   const [signalsModalOpen, setSignalsModalOpen] = useState<boolean>(false);
+  const [wallsModalOpen, setWallsModalOpen] = useState<boolean>(false);
 
   // Persist primary App settings to LocalStorage
   useEffect(() => {
@@ -103,13 +126,14 @@ export default function App() {
       localStorage.setItem('app_computedParams', JSON.stringify(computedParams));
       localStorage.setItem('app_activePresetName', activePresetName);
       localStorage.setItem('app_focusDate', focusDate);
+      localStorage.setItem('app_sidebarCollapsed', String(isSidebarCollapsed));
       if (matrixOrbOverride !== null) {
         localStorage.setItem('app_matrixOrbOverride', String(matrixOrbOverride));
       } else {
         localStorage.removeItem('app_matrixOrbOverride');
       }
     } catch (e) {}
-  }, [activeTab, computedParams, activePresetName, focusDate, matrixOrbOverride]);
+  }, [activeTab, computedParams, activePresetName, focusDate, matrixOrbOverride, isSidebarCollapsed]);
 
   // Check if pending inputs differ from active computed parameters
   const isDirty = useMemo(() => {
@@ -135,11 +159,10 @@ export default function App() {
     computedParams
   ]);
 
-  // Compute Matrix Data (Only re-computes when computedParams change)
+  // Compute Matrix Data
   const activeAspects = computedParams.aspectMode === 'all' ? ALL_ASPECTS : (MAJOR_ASPECTS as Record<string, number>);
 
   const matrix = useMemo(() => {
-    // Sanity bounds on price range
     const safeLo = Math.max(100, Math.min(computedParams.priceLo, computedParams.priceHi));
     const safeHi = Math.max(safeLo + 100, Math.max(computedParams.priceLo, computedParams.priceHi));
     const ringLo = Math.floor(safeLo / 100);
@@ -181,7 +204,6 @@ export default function App() {
     );
   }, [matrix, computedParams]);
 
-  const datesBadgeCount = criticalEvents.filter((e) => e.sig && e.sig.tier === 'gold').length || criticalEvents.length;
   const boxesBadgeCount = boxBreakouts.reduce(
     (sum, bx) => sum + bx.levels.reduce((s2, lv) => s2 + lv.departures.filter((d) => d.sig).length, 0),
     0
@@ -260,41 +282,122 @@ export default function App() {
     document.body.removeChild(link);
   };
 
+  const TAB_TITLES: Record<string, { title: string; icon: React.FC<{ className?: string }> }> = {
+    terminal: { title: 'Trading Terminal', icon: CandlestickChart },
+    boxingdates: { title: 'Boxing Dates', icon: CalendarRange },
+    boxes: { title: 'Box Breakouts', icon: Box },
+    matrix: { title: 'Matrix Grid', icon: Grid3X3 },
+    overview: { title: 'Overview Dashboard', icon: LayoutDashboard },
+    intraday: { title: 'Intraday Levels', icon: Target }
+  };
+
+  const ActiveIcon = TAB_TITLES[activeTab]?.icon || CandlestickChart;
+
   return (
-    <div className="min-h-screen bg-[#070a14] text-slate-200 p-3 sm:p-6 selection:bg-amber-400 selection:text-slate-950">
-      <div className="max-w-[1600px] mx-auto space-y-4">
-        {/* Header */}
-        <Header
-          onSelectPreset={handleSelectPreset}
-          onOpenSignalsModal={() => setSignalsModalOpen(true)}
-          onExportCsv={handleExportCsv}
-          activePresetName={activePresetName}
-        />
+    <div className="flex h-screen w-screen overflow-hidden bg-[#070a14] text-slate-200 selection:bg-amber-400 selection:text-slate-950">
+      {/* Collapsible Sidebar */}
+      <Sidebar
+        isCollapsed={isSidebarCollapsed}
+        onToggleCollapse={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
+        activeTab={activeTab}
+        onTabChange={(tab) => setActiveTab(tab)}
+        boxesBadgeCount={boxesBadgeCount}
+        activePresetName={activePresetName}
+        onSelectPreset={handleSelectPreset}
+        onOpenSignalsModal={() => setSignalsModalOpen(true)}
+        onOpenWallsModal={() => setWallsModalOpen(true)}
+        onExportCsv={handleExportCsv}
+        dateFrom={inputDateFrom}
+        dateTo={inputDateTo}
+        priceLo={inputPriceLo}
+        priceHi={inputPriceHi}
+        dateStep={inputDateStep}
+        orb={inputOrb}
+        minHighlight={inputMinHighlight}
+        aspectMode={inputAspectMode}
+        isDirty={isDirty}
+        onChange={handleControlsChange}
+        onCompute={handleCompute}
+      />
 
-        {/* Controls Bar */}
-        <ControlsBar
-          dateFrom={inputDateFrom}
-          dateTo={inputDateTo}
-          priceLo={inputPriceLo}
-          priceHi={inputPriceHi}
-          dateStep={inputDateStep}
-          orb={inputOrb}
-          minHighlight={inputMinHighlight}
-          aspectMode={inputAspectMode}
-          isDirty={isDirty}
-          onChange={handleControlsChange}
-          onCompute={handleCompute}
-        />
+      {/* Main Full-Bleed Content Container */}
+      <div className="flex-1 flex flex-col h-screen overflow-hidden min-w-0">
+        {/* Sleek Topbar */}
+        <header className="flex items-center justify-between px-3 py-1.5 bg-[#0b0f1d] border-b border-slate-800/80 shrink-0 select-none z-30">
+          <div className="flex items-center gap-3 min-w-0">
+            {/* Sidebar toggle button when collapsed */}
+            {isSidebarCollapsed && (
+              <button
+                onClick={() => setIsSidebarCollapsed(false)}
+                className="p-1 rounded-lg bg-slate-900 border border-slate-800 text-amber-400 hover:text-amber-300 hover:bg-slate-800 transition-all shrink-0"
+                title="Expand Sidebar"
+              >
+                <PanelLeftOpen className="w-4 h-4" />
+              </button>
+            )}
 
-        {/* Tab Navigation */}
-        <Navigation
-          activeTab={activeTab}
-          onTabChange={(tab) => setActiveTab(tab)}
-          boxesBadgeCount={boxesBadgeCount}
-        />
+            {/* Active Tab Title */}
+            <div className="flex items-center gap-2 min-w-0">
+              <ActiveIcon className="w-4 h-4 text-amber-400 shrink-0" />
+              <h1 className="font-mono text-xs sm:text-sm font-bold text-amber-200 uppercase tracking-wider truncate">
+                {TAB_TITLES[activeTab]?.title}
+              </h1>
+            </div>
 
-        {/* Main Tab Panels */}
-        <main className="transition-all duration-300">
+            {/* Preset & Range Badges */}
+            <div className="hidden md:flex items-center gap-2 pl-2 border-l border-slate-800">
+              <span className="px-2 py-0.5 rounded bg-amber-400/10 text-amber-300 border border-amber-400/30 text-[10px] font-mono font-semibold flex items-center gap-1">
+                <Layers className="w-3 h-3" /> {activePresetName}
+              </span>
+              <span className="px-2 py-0.5 rounded bg-slate-900 text-slate-400 border border-slate-800 text-[10px] font-mono">
+                {computedParams.dateFrom} ➔ {computedParams.dateTo}
+              </span>
+              <span className="px-2 py-0.5 rounded bg-slate-900 text-slate-400 border border-slate-800 text-[10px] font-mono">
+                {computedParams.priceLo.toLocaleString()} – {computedParams.priceHi.toLocaleString()} pts
+              </span>
+            </div>
+          </div>
+
+          {/* Quick Action Controls in Topbar */}
+          <div className="flex items-center gap-2 shrink-0">
+            {isDirty && (
+              <button
+                onClick={handleCompute}
+                className="flex items-center gap-1 px-2.5 py-0.5 rounded-lg bg-amber-400 text-slate-950 font-bold text-xs font-mono shadow-md shadow-amber-400/30 animate-pulse hover:bg-amber-300 transition-all"
+              >
+                <Play className="w-3 h-3 fill-current" />
+                Compute
+              </button>
+            )}
+
+            <button
+              onClick={() => setWallsModalOpen(true)}
+              className="hidden sm:flex items-center gap-1.5 px-2 py-0.5 rounded-lg font-mono text-xs font-semibold text-amber-300 bg-amber-500/10 border border-amber-500/30 hover:bg-amber-500/20 transition-all"
+            >
+              <Grid3X3 className="w-3.5 h-3.5 text-amber-400" />
+              Matrix Walls
+            </button>
+
+            <button
+              onClick={() => setSignalsModalOpen(true)}
+              className="hidden sm:flex items-center gap-1.5 px-2 py-0.5 rounded-lg font-mono text-xs font-semibold text-amber-300 bg-amber-500/10 border border-amber-500/30 hover:bg-amber-500/20 transition-all"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+              42 Signals
+            </button>
+
+            <button
+              onClick={handleExportCsv}
+              className="hidden sm:flex items-center gap-1.5 px-2 py-0.5 rounded-lg font-mono text-xs font-semibold text-teal-300 bg-teal-500/10 border border-teal-500/30 hover:bg-teal-500/20 transition-all"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5 text-teal-400" />
+              Export
+            </button>
+          </div>
+        </header>
+
+        {/* Main Content View Container */}
+        <main className={`flex-1 flex flex-col h-full min-h-0 overflow-y-auto no-scrollbar ${activeTab === 'terminal' ? 'p-1.5 sm:p-2' : 'p-3 sm:p-5'}`}>
           {activeTab === 'terminal' && (
             <TradingTerminalTab
               matrix={matrix}
@@ -361,19 +464,25 @@ export default function App() {
 
           {activeTab === 'intraday' && <IntradayTab />}
         </main>
-
-        {/* Footer */}
-        <footer className="pt-8 pb-4 border-t border-slate-800/80 text-[11px] font-mono text-slate-500 leading-relaxed">
-          <p>
-            <b>Ephemeris & Analysis Engine:</b> High-precision Keplerian planetary orbital computation (Sun, Moon, Mercury, Venus, Mars, Jupiter, Saturn, Uranus, Neptune, Pluto & Lunar Nodes). Statistical breakout signals derived from 6,595-day historical study on Nifty Index (2000–2026, 735 boxing episodes). Historical signal lifts are analytical metrics for pressure analysis, not financial advice.
-          </p>
-        </footer>
       </div>
 
       {/* 42 Signals Catalog Modal */}
       <SignalsCatalogModal
         isOpen={signalsModalOpen}
         onClose={() => setSignalsModalOpen(false)}
+      />
+
+      {/* Matrix Planetary Walls Catalog Pop Box Modal */}
+      <MatrixWallsModal
+        isOpen={wallsModalOpen}
+        onClose={() => setWallsModalOpen(false)}
+        matrix={matrix}
+        priceLo={computedParams.priceLo}
+        priceHi={computedParams.priceHi}
+        dateFrom={computedParams.dateFrom}
+        dateTo={computedParams.dateTo}
+        orb={computedParams.orb}
+        minHighlight={computedParams.minHighlight}
       />
     </div>
   );
