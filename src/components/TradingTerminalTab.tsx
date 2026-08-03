@@ -1616,7 +1616,24 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
           {/* Matrix Planet Aspects & Boxing Info Row on Hover */}
           {hoverAstroInfo && (
             <div className="border-t border-slate-800 pt-2 space-y-2 font-mono text-[11px]">
-              {/* Row 1: Planets at Pressure */}
+              {/* Special Price-Date Box Wall Match Highlight Callout */}
+              {hoverAstroInfo.candleWallMatches && hoverAstroInfo.candleWallMatches.length > 0 && (
+                <div className="p-2 rounded-lg bg-gradient-to-r from-amber-500/25 via-amber-500/15 to-slate-900 border border-amber-400 text-xs flex flex-wrap items-center justify-between gap-2 shadow-md">
+                  <div className="text-amber-200 font-extrabold flex items-center gap-1.5">
+                    <Star className="w-4 h-4 text-amber-300 fill-amber-300 animate-pulse" />
+                    <span>⭐ SPECIAL DAY: PRICE-DATE WALL MATCH!</span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {hoverAstroInfo.candleWallMatches.map((wm, idx) => (
+                      <span key={idx} className="px-2 py-0.5 rounded bg-amber-400 text-slate-950 font-bold font-mono text-[11px]">
+                        {wm.matchType}: {wm.matchedPrice.toLocaleString()} ({wm.angleLabel || '0°'})
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Row 1: Planets at Pressure & Wall Distance Gap */}
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-amber-400 font-bold flex items-center gap-1 uppercase text-[10px] tracking-wider">
@@ -1625,6 +1642,14 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
                       PLANETS AT PRESSURE ({hoverAstroInfo.closestWall.type} @ {hoverAstroInfo.closestWall.price.toLocaleString()}):
                     </span>
                   </span>
+                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${
+                    hoverAstroInfo.closestWall.distance === 0
+                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                      : 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                  }`}>
+                    {hoverAstroInfo.closestWall.distance === 0 ? 'Exact Wall Hit' : `Gap ±${hoverAstroInfo.closestWall.distance} pts`}
+                  </span>
+
                   {hoverAstroInfo.wallAspectHits.length > 0 ? (
                     hoverAstroInfo.wallAspectHits.map((hit, idx) => {
                       const pMeta = PLANET_META[hit.p];
@@ -1664,19 +1689,42 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
                 </div>
               </div>
 
-              {/* Row 2: Date Boxing & Price Boxing Info Badges */}
-              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-800/60 pt-1.5 text-[11px]">
+              {/* Row 2: Date Boxing, Wall Syncs & Price Boxing Info */}
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-800/60 pt-2 text-[11px]">
                 {/* Date Boxing Match Indicator */}
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-amber-300 font-bold flex items-center gap-1 text-[10px] uppercase">
                     <CalendarDays className="w-3.5 h-3.5 text-amber-400" />
                     <span>36-H Boxing:</span>
                   </span>
                   {hoverAstroInfo.matchedBoxingDate ? (
-                    <span className="px-2 py-0.5 rounded bg-amber-400/20 text-amber-300 border border-amber-400/40 font-bold text-[10px] flex items-center gap-1">
-                      🥊 {hoverAstroInfo.matchedBoxingDate.kind.toUpperCase()} MATCH ({hoverAstroInfo.matchedBoxingDate.date})
-                      {hoverAstroInfo.matchedBoxingDate.snappedFrom && ` [snapped from ${hoverAstroInfo.matchedBoxingDate.snappedFrom}]`}
-                    </span>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="px-2 py-0.5 rounded bg-amber-400/20 text-amber-300 border border-amber-400/40 font-bold text-[10px] flex items-center gap-1">
+                        🥊 {hoverAstroInfo.matchedBoxingDate.kind.toUpperCase()} MATCH ({hoverAstroInfo.matchedBoxingDate.date})
+                        {hoverAstroInfo.matchedBoxingDate.snappedFrom && ` [snapped from ${hoverAstroInfo.matchedBoxingDate.snappedFrom}]`}
+                      </span>
+                      <div className="flex items-center gap-1 text-[10px]">
+                        <span className="text-slate-400">Walls:</span>
+                        {[...hoverAstroInfo.matchedBoxingDate.perm, ...hoverAstroInfo.matchedBoxingDate.strong].map((p) => (
+                          <span key={p} className="px-1 bg-slate-950 rounded border border-slate-800 font-mono text-amber-300 text-[10px]">
+                            {p.toLocaleString()}
+                          </span>
+                        ))}
+                      </div>
+                      {hoverAstroInfo.matchedBoxingDate.syncPrices && hoverAstroInfo.matchedBoxingDate.syncPrices.length > 0 && (
+                        <div className="flex items-center gap-1 text-[10px]">
+                          <span className="text-amber-300 font-semibold">Sync Turn Targets:</span>
+                          {hoverAstroInfo.matchedBoxingDate.syncPrices.slice(0, 8).map((sp) => (
+                            <span key={sp} className="px-1 bg-amber-500/20 rounded border border-amber-500/30 font-mono text-amber-200 text-[10px] font-bold">
+                              {sp.toLocaleString()}
+                            </span>
+                          ))}
+                          {hoverAstroInfo.matchedBoxingDate.syncPrices.length > 8 && (
+                            <span className="text-[10px] text-slate-400">+{hoverAstroInfo.matchedBoxingDate.syncPrices.length - 8} more</span>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   ) : hoverAstroInfo.nextBoxingDate ? (
                     <span className="text-slate-400 text-[10px]">
                       Next Boxing: <strong className="text-amber-300">{hoverAstroInfo.nextBoxingDate.date}</strong> ({hoverAstroInfo.nextBoxingDate.kind})
@@ -1712,209 +1760,6 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
           ref={chartContainerRef}
           className={`w-full ${isPopout ? 'h-[calc(100vh-250px)] min-h-[620px]' : 'h-[520px]'}`}
         />
-
-        {/* Floating Matrix Planet Aspects Tooltip on Hover */}
-        {hoverAstroInfo && (
-          <div
-            style={{
-              position: 'absolute',
-              top: crosshairPoint ? Math.max(12, Math.min(crosshairPoint.y - 40, 260)) : 12,
-              left: crosshairPoint ? Math.min(crosshairPoint.x + 20, (chartContainerRef.current?.clientWidth || 800) - 360) : 'auto',
-              right: crosshairPoint ? 'auto' : 12,
-            }}
-            className="z-30 bg-slate-950/95 border border-amber-500/40 backdrop-blur-xl rounded-xl p-3 shadow-2xl max-w-xs sm:max-w-md pointer-events-none transition-all duration-75 space-y-2.5 font-mono text-xs"
-          >
-            {/* Tooltip Header */}
-            <div className="flex items-center justify-between border-b border-slate-800 pb-1.5">
-              <div className="flex items-center gap-1.5 text-amber-300 font-bold">
-                <Sparkles className="w-4 h-4 text-amber-400 animate-pulse" />
-                <span>{hoverAstroInfo.closestWall.type}: {hoverAstroInfo.closestWall.price.toLocaleString()}</span>
-              </div>
-              <span className="text-[10px] text-amber-300 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/30 font-semibold">
-                {hoverAstroInfo.dateStr}
-              </span>
-            </div>
-
-            {/* Wall Distance / Hover Price info */}
-            <div className="text-[10px] text-slate-400 flex items-center justify-between">
-              <span>Price: <strong className="text-slate-200">{hoverAstroInfo.hoverPrice.toLocaleString()}</strong></span>
-              <span>Wall Gap: <strong className={hoverAstroInfo.closestWall.distance === 0 ? "text-emerald-400" : "text-amber-400"}>
-                {hoverAstroInfo.closestWall.distance === 0 ? "Exact Hit" : `±${hoverAstroInfo.closestWall.distance} pts`}
-              </strong></span>
-            </div>
-
-            {/* Planets at Pressure */}
-            <div className="space-y-1.5 pt-0.5">
-              <div className="text-[10px] uppercase font-bold text-amber-300 tracking-wider flex items-center justify-between">
-                <span>PLANETS AT PRESSURE</span>
-                <span className="text-amber-400 text-[9px] font-bold">{hoverAstroInfo.wallAspectHits.length} Hits</span>
-              </div>
-              {hoverAstroInfo.wallAspectHits.length > 0 ? (
-                <div className="flex flex-wrap gap-1.5 max-h-48 overflow-y-auto pr-1 no-scrollbar">
-                  {hoverAstroInfo.wallAspectHits.map((hit, idx) => {
-                    const pMeta = PLANET_META[hit.p];
-                    const aspMeta = ASPECT_META[hit.a];
-                    const floorSig = getSignal(hit.p, hit.a, 'depart', 'floor');
-                    const ceilSig = getSignal(hit.p, hit.a, 'depart', 'ceiling');
-                    const bestSig = [floorSig, ceilSig].filter(Boolean).sort((a, b) => b!.lift - a!.lift)[0];
-
-                    return (
-                      <div
-                        key={idx}
-                        className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800 font-mono text-[11px] shadow-sm"
-                      >
-                        <span className="w-2 h-2 rounded-full" style={{ backgroundColor: aspMeta?.color || '#888' }} />
-                        <span style={{ color: pMeta?.color || '#fff' }}>{pMeta?.sym}</span>
-                        <span className="text-slate-200 font-medium">{hit.p}</span>
-                        <span style={{ color: aspMeta?.color || '#ccc' }}>{aspMeta?.abbr || hit.a}</span>
-                        <span className="text-slate-500 text-[10px]">({hit.o}°)</span>
-                        {bestSig && (
-                          <span
-                            className="px-1.5 py-0.5 rounded text-[10px] font-bold ml-0.5"
-                            style={{
-                              backgroundColor: TIER_META[bestSig.tier].bg,
-                              color: TIER_META[bestSig.tier].color,
-                              border: `1px solid ${TIER_META[bestSig.tier].border}`
-                            }}
-                          >
-                            {TIER_META[bestSig.tier].icon} {bestSig.lift.toFixed(1)}×
-                          </span>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <div className="text-[11px] text-slate-500 italic py-1">No planets at pressure at this wall level on {hoverAstroInfo.dateStr}</div>
-              )}
-            </div>
-
-            {/* Date Boxing Section */}
-            <div className="border-t border-slate-800/80 pt-2 space-y-1">
-              <div className="text-[10px] font-bold text-amber-300 uppercase tracking-wider flex items-center justify-between">
-                <span className="flex items-center gap-1">
-                  <CalendarDays className="w-3.5 h-3.5 text-amber-400" />
-                  <span>36-H Date Boxing</span>
-                </span>
-                {hoverAstroInfo.matchedBoxingDate ? (
-                  <span className="px-1.5 py-0.5 text-[9px] font-extrabold rounded bg-amber-400 text-slate-950 uppercase">
-                    ★ {hoverAstroInfo.matchedBoxingDate.kind} MATCH
-                  </span>
-                ) : (
-                  <span className="text-[9px] text-slate-500 font-normal">No Direct Hit</span>
-                )}
-              </div>
-
-              {hoverAstroInfo.matchedBoxingDate ? (
-                <div className="p-1.5 rounded bg-amber-500/10 border border-amber-500/30 text-[11px] space-y-1">
-                  <div className="text-amber-200 font-semibold flex items-center justify-between text-[10px]">
-                    <span>Target Date: <strong>{hoverAstroInfo.matchedBoxingDate.date}</strong></span>
-                    {hoverAstroInfo.matchedBoxingDate.snappedFrom && (
-                      <span className="text-[9px] text-slate-400 italic">
-                        (snapped from {hoverAstroInfo.matchedBoxingDate.snappedFrom})
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-[10px] text-slate-300 flex flex-wrap items-center gap-1">
-                    <span className="text-slate-400">Walls:</span>
-                    {[...hoverAstroInfo.matchedBoxingDate.perm, ...hoverAstroInfo.matchedBoxingDate.strong].map((p) => (
-                      <span key={p} className="px-1 bg-slate-900 rounded border border-slate-700 font-mono text-amber-300 text-[9px]">
-                        {p.toLocaleString()}
-                      </span>
-                    ))}
-                  </div>
-
-                  {/* Special Price-Date Box Wall Match Highlight Callout */}
-                  {hoverAstroInfo.candleWallMatches && hoverAstroInfo.candleWallMatches.length > 0 && (
-                    <div className="p-1.5 rounded bg-gradient-to-r from-amber-500/30 via-amber-500/20 to-slate-900 border border-amber-400 text-[10px] space-y-1 my-1 shadow-sm">
-                      <div className="text-amber-200 font-extrabold flex items-center gap-1">
-                        <Star className="w-3.5 h-3.5 text-amber-300 fill-amber-300 animate-pulse" />
-                        <span>⭐ SPECIAL DAY: PRICE-DATE WALL MATCH!</span>
-                      </div>
-                      <div className="flex flex-wrap gap-1">
-                        {hoverAstroInfo.candleWallMatches.map((wm, idx) => (
-                          <span key={idx} className="px-1.5 py-0.5 rounded bg-amber-400 text-slate-950 font-bold font-mono text-[9px]">
-                            {wm.matchType}: {wm.matchedPrice.toLocaleString()} ({wm.angleLabel || '0°'})
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  {hoverAstroInfo.matchedBoxingDate.syncPrices && hoverAstroInfo.matchedBoxingDate.syncPrices.length > 0 && (
-                    <div className="text-[10px] text-slate-300 flex flex-wrap items-center gap-1 pt-0.5 border-t border-amber-500/20">
-                      <span className="text-amber-300 font-semibold">Sync Turn Targets:</span>
-                      {hoverAstroInfo.matchedBoxingDate.syncPrices.slice(0, 6).map((sp) => (
-                        <span key={sp} className="px-1 bg-amber-500/20 rounded border border-amber-500/30 font-mono text-amber-200 text-[9px] font-bold">
-                          {sp.toLocaleString()}
-                        </span>
-                      ))}
-                      {hoverAstroInfo.matchedBoxingDate.syncPrices.length > 6 && (
-                        <span className="text-[9px] text-slate-400">+{hoverAstroInfo.matchedBoxingDate.syncPrices.length - 6} more</span>
-                      )}
-                    </div>
-                  )}
-                </div>
-              ) : hoverAstroInfo.nextBoxingDate ? (
-                <div className="text-[10px] text-slate-400 flex items-center justify-between">
-                  <span>Next Boxing Date:</span>
-                  <span className="text-amber-300 font-semibold">
-                    {hoverAstroInfo.nextBoxingDate.date} ({hoverAstroInfo.nextBoxingDate.kind})
-                  </span>
-                </div>
-              ) : (
-                <div className="text-[10px] text-slate-500 italic">No upcoming boxing date in window</div>
-              )}
-            </div>
-
-            {/* Price Boxing & Gann Box Channel Section */}
-            <div className="border-t border-slate-800/80 pt-2 space-y-1">
-              <div className="text-[10px] font-bold text-teal-300 uppercase tracking-wider flex items-center justify-between">
-                <span className="flex items-center gap-1">
-                  <Box className="w-3.5 h-3.5 text-teal-400" />
-                  <span>Price Boxing & Channel</span>
-                </span>
-                {hoverAstroInfo.priceBoxingDetails && (
-                  <span className="text-[9px] text-teal-300 font-bold">
-                    Box #{hoverAstroInfo.priceBoxingDetails.boxId + 1}
-                  </span>
-                )}
-              </div>
-
-              {hoverAstroInfo.priceBoxingDetails ? (
-                <div className="p-1.5 rounded bg-teal-500/10 border border-teal-500/30 text-[11px] space-y-1.5">
-                  <div className="flex items-center justify-between font-bold text-teal-200 text-[10px]">
-                    <span>Floor: {hoverAstroInfo.priceBoxingDetails.floorPrice.toLocaleString()}</span>
-                    <span>Width: {hoverAstroInfo.priceBoxingDetails.boxWidth.toLocaleString()} pts</span>
-                    <span>Ceil: {hoverAstroInfo.priceBoxingDetails.ceilPrice.toLocaleString()}</span>
-                  </div>
-
-                  {/* Channel Progress Bar */}
-                  <div className="w-full bg-slate-900 rounded-full h-1.5 border border-slate-800 overflow-hidden relative">
-                    <div
-                      className="bg-teal-400 h-full transition-all"
-                      style={{ width: `${Math.max(0, Math.min(100, hoverAstroInfo.priceBoxingDetails.boxPct))}%` }}
-                    />
-                  </div>
-
-                  <div className="text-[10px] text-slate-300 flex items-center justify-between">
-                    <span>Position: <b className="text-teal-300">{hoverAstroInfo.priceBoxingDetails.boxPct.toFixed(1)}%</b> inside box</span>
-                    <span>
-                      Gap: <b className="text-emerald-400">+{hoverAstroInfo.priceBoxingDetails.gapToFloor.toFixed(0)}</b> / <b className="text-rose-400">-{hoverAstroInfo.priceBoxingDetails.gapToCeil.toFixed(0)}</b>
-                    </span>
-                  </div>
-                </div>
-              ) : (
-                <div className="text-[10px] text-slate-500 italic">No Gann box calculated</div>
-              )}
-            </div>
-
-            {/* Matrix Day Summary */}
-            <div className="border-t border-slate-800/80 pt-1.5 text-[10px] text-slate-400 flex items-center justify-between">
-              <span>Matrix Active Rings: <strong className="text-amber-300">{hoverAstroInfo.matrixRingCount}</strong></span>
-              <span>Total Alignments: <strong className="text-amber-300">{hoverAstroInfo.matrixHitCount}</strong></span>
-            </div>
-          </div>
-        )}
 
         {/* Loading Older History Badge */}
         {isLoadingOlder && (
