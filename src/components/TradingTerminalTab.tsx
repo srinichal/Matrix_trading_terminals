@@ -10,6 +10,7 @@ import {
   ISeriesApi,
   IPriceLine,
   CandlestickData,
+  WhitespaceData,
   Time,
   SeriesMarker
 } from 'lightweight-charts';
@@ -45,8 +46,9 @@ import {
   Star,
   Grid3X3
 } from 'lucide-react';
-import { MatrixData, DepartureEvent, PlanetName, AspectName, BoxWallMatch } from '../types';
-import { scanCriticalDates, computeBoxingDates, computeBoxBreakouts, ringToDegree, fromIso, checkCandleWallMatch } from '../lib/matrix';
+import { MatrixData, DepartureEvent, PlanetName, AspectName, BoxWallMatch, SwingPivot, BoxingDate } from '../types';
+import { scanCriticalDates, computeBoxingDates, computeMultiAnchorDates, computeBoxBreakouts, ringToDegree, fromIso, checkCandleWallMatch } from '../lib/matrix';
+import { NIFTY_SWINGS } from '../data/niftySwings';
 import { PLANET_META, ASPECT_META, BODY_LIST, getPositions, findAspectAll } from '../lib/astronomy';
 import { getSignal, TIER_META } from '../lib/signals';
 import { MatrixWallsModal } from './MatrixWallsModal';
@@ -59,6 +61,7 @@ interface TradingTerminalTabProps {
   priceHi: number;
   orb: number;
   minHighlight: number;
+  userSwings?: SwingPivot[];
 }
 
 type TimeframeType = '15m' | '30m' | '1h' | '1d';
@@ -73,6 +76,69 @@ interface OHLCCandle {
   volume: number;
 }
 
+function generateFutureWhitespace(
+  candles: OHLCCandle[],
+  targetEndDateStr: string,
+  timeframe: TimeframeType
+): WhitespaceData<Time>[] {
+  if (candles.length === 0) return [];
+
+  const lastCandle = candles[candles.length - 1];
+  const lastDateObj = new Date(lastCandle.time * 1000);
+
+  let endMs = new Date(targetEndDateStr + 'T23:59:59Z').getTime();
+  if (isNaN(endMs)) {
+    endMs = lastDateObj.getTime() + 45 * 86400 * 1000;
+  }
+  const minFutureEndMs = lastDateObj.getTime() + 45 * 86400 * 1000;
+  if (endMs < minFutureEndMs) {
+    endMs = minFutureEndMs;
+  }
+
+  const whitespace: WhitespaceData<Time>[] = [];
+  const existingTimes = new Set<number>(candles.map((c) => c.time));
+
+  let currMs = lastDateObj.getTime() + 86400 * 1000;
+
+  while (currMs <= endMs) {
+    const d = new Date(currMs);
+    const dayOfWeek = d.getUTCDay(); // 0: Sun, 6: Sat
+
+    if (dayOfWeek !== 0 && dayOfWeek !== 6) {
+      const year = d.getUTCFullYear();
+      const month = String(d.getUTCMonth() + 1).padStart(2, '0');
+      const date = String(d.getUTCDate()).padStart(2, '0');
+      const dateStr = `${year}-${month}-${date}`;
+
+      if (timeframe === '1d') {
+        const tSec = Math.floor(new Date(`${dateStr}T00:00:00Z`).getTime() / 1000);
+        if (!existingTimes.has(tSec)) {
+          whitespace.push({ time: tSec as Time });
+          existingTimes.add(tSec);
+        }
+      } else {
+        const stepMinutes = timeframe === '15m' ? 15 : timeframe === '1h' ? 60 : 30;
+        const startMin = 9 * 60 + 15; // 09:15 IST
+        const endMin = 15 * 60 + 30; // 15:30 IST
+
+        for (let m = startMin; m <= endMin; m += stepMinutes) {
+          const hh = String(Math.floor(m / 60)).padStart(2, '0');
+          const mm = String(m % 60).padStart(2, '0');
+          const isoTimeStr = `${dateStr}T${hh}:${mm}:00+05:30`;
+          const tSec = Math.floor(new Date(isoTimeStr).getTime() / 1000);
+          if (!existingTimes.has(tSec)) {
+            whitespace.push({ time: tSec as Time });
+            existingTimes.add(tSec);
+          }
+        }
+      }
+    }
+    currMs += 86400 * 1000;
+  }
+
+  return whitespace;
+}
+
 export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
   matrix,
   dateFrom,
@@ -80,7 +146,8 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
   priceLo,
   priceHi,
   orb,
-  minHighlight
+  minHighlight,
+  userSwings = []
 }) => {
   // Chart & Data state
   const [timeframe, setTimeframe] = useState<TimeframeType>(() => {
@@ -271,6 +338,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
   const isLoadingOlderRef = useRef<boolean>(false);
   const candlesRef = useRef<OHLCCandle[]>(candles);
   const timeframeRef = useRef<TimeframeType>(timeframe);
+  const allSeriesTimesRef = useRef<{ time: number; index: number }[]>([]);
 
   useEffect(() => {
     candlesRef.current = candles;
@@ -480,8 +548,55 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
 
   // 36-Harmonic Boxing Dates Calculation
   const rawBoxingDates = useMemo(() => {
-    return computeBoxingDates(dateFrom, dateTo, permWalls, strongWalls, true);
-  }, [dateFrom, dateTo, permWalls, strongWalls]);
+    const wallDates = computeBoxingDates(dateFrom, dateTo, permWalls, strongWalls, true);
+
+    const map = new Map<string, SwingPivot>();
+    for (const s of NIFTY_SWINGS) map.set(s.date, s);
+    for (const s of userSwings) map.set(s.date, s);
+    const sortedSwings = Array.from(map.values()).sort((a, b) => a.date.localeCompare(b.date));
+
+    const multiAnchorDates = computeMultiAnchorDates(sortedSwings, dateFrom, dateTo, 18, true);
+
+    const mergedMap = new Map<string, BoxingDate>();
+
+    for (const wd of wallDates) {
+      mergedMap.set(wd.date, { ...wd });
+    }
+
+    for (const mad of multiAnchorDates) {
+      const existing = mergedMap.get(mad.date);
+      if (existing) {
+        existing.swingConfluence = {
+          isConfluence: mad.isConfluence,
+          anchors: mad.anchors,
+          spokeCount: mad.spokeCount,
+          highAnchors: mad.highAnchors,
+          lowAnchors: mad.lowAnchors
+        };
+        if (mad.isConfluence) existing.kind = 'perm';
+      } else {
+        mergedMap.set(mad.date, {
+          date: mad.date,
+          kind: mad.isConfluence ? 'perm' : 'strong',
+          perm: permWalls,
+          strong: strongWalls,
+          wallSyncs: [],
+          syncPrices: [],
+          isWeekend: mad.isWeekend,
+          snappedFrom: mad.snappedDate,
+          swingConfluence: {
+            isConfluence: mad.isConfluence,
+            anchors: mad.anchors,
+            spokeCount: mad.spokeCount,
+            highAnchors: mad.highAnchors,
+            lowAnchors: mad.lowAnchors
+          }
+        });
+      }
+    }
+
+    return Array.from(mergedMap.values()).sort((a, b) => a.date.localeCompare(b.date));
+  }, [dateFrom, dateTo, permWalls, strongWalls, userSwings]);
 
   const filteredBoxingDates = useMemo(() => {
     return rawBoxingDates.filter((bd) => {
@@ -689,6 +804,65 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
   }, [rawAstroEvents, astroTierFilter, astroDirectionFilter]);
 
   // Pointing Arrow Leader Line Overlay Redraw Logic
+  const redrawLeaderCalloutsRef = useRef<() => void>(() => {});
+
+  const getDowStr = (dateStr: string) => {
+    try {
+      const d = new Date(dateStr + 'T00:00:00Z');
+      return d.toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' });
+    } catch (e) {
+      return '';
+    }
+  };
+
+  const findXCoordinateForDate = useCallback((targetDateStr: string): number | null => {
+    if (!targetDateStr) return null;
+    const chart = chartRef.current;
+    if (!chart) return null;
+
+    const targetMs = new Date(targetDateStr + 'T00:00:00Z').getTime();
+    if (isNaN(targetMs)) return null;
+    const targetSec = Math.floor(targetMs / 1000);
+
+    const seriesTimes = allSeriesTimesRef.current;
+    if (seriesTimes.length > 0) {
+      let closestIndex = -1;
+      let minDiff = 4 * 86400; // 4 days max tolerance for weekend/holiday snapping
+
+      for (let i = 0; i < seriesTimes.length; i++) {
+        const item = seriesTimes[i];
+        const diff = Math.abs(item.time - targetSec);
+        if (diff < minDiff) {
+          minDiff = diff;
+          closestIndex = item.index;
+        }
+      }
+
+      if (closestIndex >= 0) {
+        return chart.timeScale().logicalToCoordinate(closestIndex);
+      }
+    }
+
+    const currentCandles = candlesRef.current;
+    if (currentCandles.length === 0) return null;
+
+    const lastCandle = currentCandles[currentCandles.length - 1];
+    const calendarDaysDiff = (targetSec - lastCandle.time) / 86400;
+
+    let candlesPerDay = 5 / 7;
+    const tf = timeframeRef.current;
+    if (tf === '15m') candlesPerDay = 25 * (5 / 7);
+    else if (tf === '30m') candlesPerDay = 13 * (5 / 7);
+    else if (tf === '1h') candlesPerDay = 6.25 * (5 / 7);
+    else if (tf === '1d') candlesPerDay = 5 / 7;
+
+    const futureBarOffset = calendarDaysDiff * candlesPerDay;
+    const lastIndex = currentCandles.length - 1;
+    const targetLogicalIndex = lastIndex + futureBarOffset;
+
+    return chart.timeScale().logicalToCoordinate(targetLogicalIndex);
+  }, []);
+
   const redrawLeaderCallouts = useCallback(() => {
     const canvas = overlayCanvasRef.current;
     const chart = chartRef.current;
@@ -718,18 +892,10 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
       return;
     }
 
-    const dateToTimestamp = new Map<string, Time>();
-    candlesRef.current.forEach((c) => {
-      const d = new Date(c.time * 1000);
-      const dStrUtc = d.toISOString().split('T')[0];
-      const dStrLocal = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-      if (!dateToTimestamp.has(dStrUtc)) dateToTimestamp.set(dStrUtc, c.time as Time);
-      if (!dateToTimestamp.has(dStrLocal)) dateToTimestamp.set(dStrLocal, c.time as Time);
-    });
-
     interface CalloutCandidate {
       id: string;
-      time: Time;
+      time?: Time;
+      xOverride?: number;
       price: number;
       title: string;
       subtitle: string;
@@ -737,15 +903,17 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
       borderColor: string;
       bgTint: string;
       isUp: boolean;
+      isBoxingDate?: boolean;
+      dateStr?: string;
     }
 
     const candidateList: CalloutCandidate[] = [];
 
-    // 1. Astro departure signals
+    // 1. Astro departure signals (ONLY if showAstroSignals is enabled)
     if (showAstroSignals) {
       filteredAstroEvents.forEach((ev, idx) => {
-        const matchTime = dateToTimestamp.get(ev.date);
-        if (matchTime) {
+        const xCoord = findXCoordinateForDate(ev.date);
+        if (xCoord !== null) {
           const isGold = ev.sig?.tier === 'gold';
           const isSilver = ev.sig?.tier === 'silver';
           const tierLabel = isGold ? '🥇 GOLD' : isSilver ? '🥈 SILVER' : '🥉 BRONZE';
@@ -755,9 +923,9 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
 
           candidateList.push({
             id: `astro_${ev.date}_${idx}`,
-            time: matchTime,
+            xOverride: xCoord,
             price: ev.price,
-            title: `${tierLabel} @ ${ev.price.toLocaleString()}`,
+            title: `${tierLabel} ASTRO`,
             subtitle: `${ev.body} ${ev.aspect}`,
             tierLabel: isUp ? '↑ BULL DEPART' : '↓ BEAR DEPART',
             borderColor: color,
@@ -768,51 +936,66 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
       });
     }
 
-    // 2. Boxing Date Callouts (All boxing dates moved to leader callout boxes)
+    // 2. Boxing Dates as clean vertical lines with top date badges across chart canvas
     if (showBoxingDates) {
-      filteredBoxingDates.forEach((bd, idx) => {
-        const matchTime = dateToTimestamp.get(bd.date);
-        if (matchTime) {
-          const candleOnDate = candlesRef.current.find((c) => c.time === matchTime);
-          const wallMatches = candleOnDate ? checkCandleWallMatch(candleOnDate, bd) : [];
-          const hasWallMatch = wallMatches.length > 0;
+      let lastX = -999;
+      let lastYLevel = 0;
+
+      filteredBoxingDates.forEach((bd) => {
+        const x = findXCoordinateForDate(bd.date) ?? (bd.snappedFrom ? findXCoordinateForDate(bd.snappedFrom) : null);
+        if (x !== null && x >= -30 && x <= width + 30) {
           const isPerm = bd.kind === 'perm';
-          const defaultPrice = candleOnDate ? (candleOnDate.high + candleOnDate.low) / 2 : 24000;
-          const targetPrice = wallMatches[0]?.matchedPrice || (isPerm ? (bd.perm[0] ?? bd.strong[0]) : (bd.strong[0] ?? bd.perm[0])) || defaultPrice;
+          const color = isPerm ? '#f59e0b' : '#14b8a6';
+          const dowStr = getDowStr(bd.date);
 
-          if (hasWallMatch) {
-            const matchedPriceStr = wallMatches.map((m) => `${m.matchedPrice.toLocaleString()} (${m.angleLabel || '0°'})`).join(', ');
-            candidateList.push({
-              id: `box_match_${bd.date}_${idx}`,
-              time: matchTime,
-              price: targetPrice,
-              title: `⭐ PRICE-DATE MATCH`,
-              subtitle: matchedPriceStr,
-              tierLabel: `BOX ${bd.date.slice(5)}`,
-              borderColor: '#f59e0b',
-              bgTint: 'rgba(245, 158, 11, 0.25)',
-              isUp: true
-            });
-          } else {
-            const color = isPerm ? '#f59e0b' : '#14b8a6';
-            const bgTint = isPerm ? 'rgba(245, 158, 11, 0.2)' : 'rgba(20, 184, 166, 0.2)';
-            const wallList = isPerm ? bd.perm : bd.strong;
-            const subtitleStr = wallList.length > 0
-              ? `Walls: ${wallList.slice(0, 3).map((w) => w.toLocaleString()).join(', ')}${wallList.length > 3 ? '...' : ''}`
-              : `36H Cycle Date (${bd.date.slice(5)})`;
-
-            candidateList.push({
-              id: `box_${bd.date}_${idx}`,
-              time: matchTime,
-              price: targetPrice,
-              title: `🥊 ${isPerm ? 'PERM' : 'STRONG'} 36H BOXING`,
-              subtitle: subtitleStr,
-              tierLabel: `BOX ${bd.date.slice(5)}`,
-              borderColor: color,
-              bgTint,
-              isUp: isPerm
-            });
+          // Stagger top badge level if close to previous date
+          let yLevel = 0;
+          if (Math.abs(x - lastX) < 95) {
+            yLevel = (lastYLevel + 1) % 2;
           }
+          lastX = x;
+          lastYLevel = yLevel;
+
+          const topY = 6 + yLevel * 22;
+
+          // Draw full-height vertical line across chart
+          ctx.save();
+          ctx.beginPath();
+          ctx.setLineDash(isPerm ? [6, 4] : [3, 3]);
+          ctx.strokeStyle = color;
+          ctx.globalAlpha = isPerm ? 0.8 : 0.65;
+          ctx.lineWidth = isPerm ? 1.5 : 1.2;
+          ctx.moveTo(x, topY + 18);
+          ctx.lineTo(x, height - 26);
+          ctx.stroke();
+          ctx.restore();
+
+          // Draw top date badge pill
+          ctx.save();
+          const badgeText = `${isPerm ? '🥊 PERM' : '📅 BOX'}: ${bd.date.slice(5)} (${dowStr})`;
+          ctx.font = 'bold 10px Inter, system-ui, sans-serif';
+          const textMetrics = ctx.measureText(badgeText);
+          const badgeWidth = textMetrics.width + 12;
+          const badgeHeight = 18;
+          const badgeX = Math.max(badgeWidth / 2 + 4, Math.min(width - badgeWidth / 2 - 4, x));
+
+          // Badge Background box
+          ctx.fillStyle = '#0f172a';
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 1;
+          ctx.globalAlpha = 0.95;
+          ctx.beginPath();
+          ctx.roundRect(badgeX - badgeWidth / 2, topY, badgeWidth, badgeHeight, 4);
+          ctx.fill();
+          ctx.stroke();
+
+          // Badge Text
+          ctx.fillStyle = color;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(badgeText, badgeX, topY + badgeHeight / 2);
+
+          ctx.restore();
         }
       });
     }
@@ -829,29 +1012,30 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
     }
 
     const placed: PlacedCallout[] = [];
-    const minOverlapX = 135;
+    const minOverlapX = 80;
 
     candidateList.forEach((cand) => {
-      const xCoord = chart.timeScale().timeToCoordinate(cand.time);
-      const yCoord = candleSeries.priceToCoordinate(cand.price);
+      const xCoord = cand.xOverride !== undefined ? cand.xOverride : (cand.time !== undefined ? chart.timeScale().timeToCoordinate(cand.time) : null);
+      const rawY = candleSeries.priceToCoordinate(cand.price);
+      const yCoord = (rawY !== null && !isNaN(rawY)) ? rawY : height * 0.4;
 
-      if (xCoord === null || yCoord === null) return;
-      if (xCoord < 15 || xCoord > width - 15) return;
+      if (xCoord === null) return;
+      if (xCoord < -100 || xCoord > width + 100) return;
 
       const position: 'above' | 'below' = yCoord > height * 0.4 ? 'above' : 'below';
 
       let step = 0;
-      let boxY = position === 'above' ? yCoord - 70 : yCoord + 70;
+      let boxY = position === 'above' ? yCoord - 65 : yCoord + 65;
 
       let overlap = true;
       let maxLoops = 6;
       while (overlap && maxLoops > 0) {
         overlap = false;
         for (const p of placed) {
-          if (Math.abs(p.x - xCoord) < minOverlapX && Math.abs(p.boxY - boxY) < 32) {
+          if (Math.abs(p.x - xCoord) < minOverlapX && Math.abs(p.boxY - boxY) < 30) {
             overlap = true;
             step++;
-            boxY = position === 'above' ? yCoord - (70 + step * 36) : yCoord + (70 + step * 36);
+            boxY = position === 'above' ? yCoord - (65 + step * 34) : yCoord + (65 + step * 34);
             break;
           }
         }
@@ -895,13 +1079,11 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
 
       // 2. Pointing Arrowhead directly touching target (x, y)
       ctx.beginPath();
-      ctx.moveTo(x, y); // Arrow tip touches the exact candle/price point (x, y)
+      ctx.moveTo(x, y);
       if (position === 'above') {
-        // Box is ABOVE target -> Arrow points DOWN towards (x, y)
         ctx.lineTo(x - aSize, y - arrowLength);
         ctx.lineTo(x + aSize, y - arrowLength);
       } else {
-        // Box is BELOW target -> Arrow points UP towards (x, y)
         ctx.lineTo(x - aSize, y + arrowLength);
         ctx.lineTo(x + aSize, y + arrowLength);
       }
@@ -958,10 +1140,14 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
     });
 
     ctx.restore();
-  }, [showPointingArrows, showAstroSignals, showBoxingDates, filteredAstroEvents, filteredBoxingDates]);
+  }, [showPointingArrows, showAstroSignals, showBoxingDates, filteredAstroEvents, filteredBoxingDates, findXCoordinateForDate]);
 
   useEffect(() => {
-    requestAnimationFrame(redrawLeaderCallouts);
+    redrawLeaderCalloutsRef.current = redrawLeaderCallouts;
+  }, [redrawLeaderCallouts]);
+
+  useEffect(() => {
+    requestAnimationFrame(() => redrawLeaderCalloutsRef.current());
   }, [redrawLeaderCallouts]);
 
   // Construct Kite Live URL string for preview/fetch
@@ -1098,7 +1284,8 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
       timeScale: {
         borderColor: '#334155',
         timeVisible: true,
-        secondsVisible: false
+        secondsVisible: false,
+        rightOffset: 25
       },
       handleScroll: {
         mouseWheel: true,
@@ -1224,7 +1411,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
     // Preserve user visible range before applying new data
     const prevRange = chart.timeScale().getVisibleLogicalRange();
 
-    // Set Candlestick Data
+    // Set Candlestick Data with future whitespace for date box extension
     const chartCandles: CandlestickData<Time>[] = candles.map((c) => ({
       time: c.time as Time,
       open: c.open,
@@ -1232,7 +1419,25 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
       low: c.low,
       close: c.close
     }));
-    candleSeries.setData(chartCandles);
+
+    const maxFutureDate = filteredBoxingDates.length > 0
+      ? filteredBoxingDates[filteredBoxingDates.length - 1].date
+      : dateTo;
+    const targetEndDate = maxFutureDate > dateTo ? maxFutureDate : dateTo;
+
+    const futureWhitespace = generateFutureWhitespace(candles, targetEndDate, timeframe);
+
+    const combinedSeriesData: (CandlestickData<Time> | WhitespaceData<Time>)[] = [
+      ...chartCandles,
+      ...futureWhitespace
+    ].sort((a, b) => (a.time as number) - (b.time as number));
+
+    candleSeries.setData(combinedSeriesData);
+
+    allSeriesTimesRef.current = combinedSeriesData.map((s, idx) => ({
+      time: s.time as number,
+      index: idx
+    }));
 
     // Set Volume Data
     if (volumeSeries) {
@@ -1266,8 +1471,8 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
           color: '#f59e0b', // Amber 500
           lineWidth: 2,
           lineStyle: LineStyle.Solid,
-          axisLabelVisible: true,
-          title: `PERM WALL ${pw.toLocaleString()}`
+          axisLabelVisible: false,
+          title: ''
         });
         priceLinesRef.current.push(pl);
       });
@@ -1281,8 +1486,8 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
           color: '#94a3b8', // Slate 400
           lineWidth: 1,
           lineStyle: LineStyle.Dashed,
-          axisLabelVisible: true,
-          title: `STRONG WALL ${sw.toLocaleString()}`
+          axisLabelVisible: false,
+          title: ''
         });
         priceLinesRef.current.push(pl);
       });
@@ -2053,7 +2258,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
                           <span className="text-slate-200 font-medium">{hit.p}</span>
                           <span style={{ color: aspMeta?.color || '#ccc' }}>{aspMeta?.abbr || hit.a}</span>
                           <span className="text-slate-500 text-[10px]">({hit.o}°)</span>
-                          {bestSig && (
+                          {showAstroSignals && bestSig && (
                             <span
                               className="px-1.5 py-0.2 rounded text-[10px] font-bold ml-0.5"
                               style={{
