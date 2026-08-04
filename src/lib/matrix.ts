@@ -806,8 +806,8 @@ export function computeMultiAnchorDates(
   const CYCLE    = 36;
   const spanDays = Math.round((endObj.getTime() - startObj.getTime()) / 86_400_000);
 
-  // Select K diverse anchors — all must predate windowStart
-  const diverseAnchors = selectDiverseSwingAnchors(allSwings, windowStart, K);
+  // Select K diverse anchors — all must predate windowEnd
+  const diverseAnchors = selectDiverseSwingAnchors(allSwings, windowEnd, K);
   if (diverseAnchors.length < 1) return [];
 
   // For each anchor, project its spoke forward across the window
