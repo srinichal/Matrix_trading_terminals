@@ -419,6 +419,7 @@ export default function App() {
               priceHi={computedParams.priceHi}
               orb={computedParams.orb}
               minHighlight={computedParams.minHighlight}
+              userSwings={userSwings}
             />
           )}
 
