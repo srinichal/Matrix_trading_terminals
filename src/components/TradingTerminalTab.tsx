@@ -945,55 +945,93 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
         const x = findXCoordinateForDate(bd.date) ?? (bd.snappedFrom ? findXCoordinateForDate(bd.snappedFrom) : null);
         if (x !== null && x >= -30 && x <= width + 30) {
           const isPerm = bd.kind === 'perm';
-          const color = isPerm ? '#f59e0b' : '#14b8a6';
           const dowStr = getDowStr(bd.date);
+
+          // Find if there is an evaluated visible candle on this date
+          const candleOnDate = candlesRef.current.find((c) => c.timeStr.slice(0, 10) === bd.date);
+          const wallMatches = candleOnDate ? checkCandleWallMatch(candleOnDate, bd) : [];
+          const hasWallMatch = wallMatches.length > 0;
+          const isFuture = !candleOnDate;
+
+          // Build multi-line badge content for square-ish proportion
+          let color = isPerm ? '#f59e0b' : '#14b8a6';
+          const lines: string[] = [];
+          if (hasWallMatch) {
+            color = '#f59e0b';
+            const matchSummary = wallMatches.map((m) => m.matchedPrice.toLocaleString()).join(', ');
+            lines.push('⭐ SPECIAL DAY');
+            lines.push(`${bd.date.slice(5)} (${dowStr})`);
+            lines.push(`MATCH ${matchSummary}`);
+          } else if (isFuture) {
+            color = isPerm ? '#e0a96d' : '#38bdf8';
+            lines.push(isPerm ? '🥊 PERM' : '📅 BOX');
+            lines.push(`${bd.date.slice(5)} (${dowStr})`);
+            lines.push('FUTURE');
+          } else {
+            lines.push(isPerm ? '🥊 PERM' : '📅 BOX');
+            lines.push(`${bd.date.slice(5)} (${dowStr})`);
+          }
+
+          ctx.save();
+          ctx.font = 'bold 10px Inter, system-ui, sans-serif';
+
+          let maxLineWidth = 0;
+          lines.forEach((l) => {
+            const w = ctx.measureText(l).width;
+            if (w > maxLineWidth) maxLineWidth = w;
+          });
+
+          const badgeWidth = Math.max(58, maxLineWidth + 12);
+          const lineGap = 12;
+          const badgeHeight = lines.length * lineGap + 8;
 
           // Stagger top badge level if close to previous date
           let yLevel = 0;
-          if (Math.abs(x - lastX) < 95) {
+          if (Math.abs(x - lastX) < badgeWidth + 12) {
             yLevel = (lastYLevel + 1) % 2;
           }
           lastX = x;
           lastYLevel = yLevel;
 
-          const topY = 6 + yLevel * 22;
+          const topY = 6 + yLevel * 42;
 
-          // Draw full-height vertical line across chart
-          ctx.save();
+          // Draw full-height vertical line starting below the badge
           ctx.beginPath();
-          ctx.setLineDash(isPerm ? [6, 4] : [3, 3]);
+          ctx.setLineDash(hasWallMatch ? [3, 2] : isPerm ? [6, 4] : [3, 3]);
           ctx.strokeStyle = color;
-          ctx.globalAlpha = isPerm ? 0.8 : 0.65;
-          ctx.lineWidth = isPerm ? 1.5 : 1.2;
-          ctx.moveTo(x, topY + 18);
+          ctx.globalAlpha = hasWallMatch ? 1.0 : isPerm ? 0.8 : 0.65;
+          ctx.lineWidth = hasWallMatch ? 2.0 : isPerm ? 1.5 : 1.2;
+          ctx.moveTo(x, topY + badgeHeight);
           ctx.lineTo(x, height - 26);
           ctx.stroke();
-          ctx.restore();
 
-          // Draw top date badge pill
-          ctx.save();
-          const badgeText = `${isPerm ? '🥊 PERM' : '📅 BOX'}: ${bd.date.slice(5)} (${dowStr})`;
-          ctx.font = 'bold 10px Inter, system-ui, sans-serif';
-          const textMetrics = ctx.measureText(badgeText);
-          const badgeWidth = textMetrics.width + 12;
-          const badgeHeight = 18;
+          // Draw compact square badge box
           const badgeX = Math.max(badgeWidth / 2 + 4, Math.min(width - badgeWidth / 2 - 4, x));
 
           // Badge Background box
-          ctx.fillStyle = '#0f172a';
+          ctx.fillStyle = hasWallMatch ? '#451a03' : '#0f172a';
           ctx.strokeStyle = color;
-          ctx.lineWidth = 1;
+          ctx.lineWidth = hasWallMatch ? 1.5 : 1;
           ctx.globalAlpha = 0.95;
           ctx.beginPath();
-          ctx.roundRect(badgeX - badgeWidth / 2, topY, badgeWidth, badgeHeight, 4);
+          ctx.roundRect(badgeX - badgeWidth / 2, topY, badgeWidth, badgeHeight, 5);
           ctx.fill();
           ctx.stroke();
 
-          // Badge Text
-          ctx.fillStyle = color;
+          // Render multi-line text inside badge
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
-          ctx.fillText(badgeText, badgeX, topY + badgeHeight / 2);
+          lines.forEach((line, idx) => {
+            const lineY = topY + 4 + idx * lineGap + lineGap / 2;
+            if (hasWallMatch) {
+              ctx.fillStyle = idx === 0 ? '#fbbf24' : '#fef08a';
+            } else if (isFuture) {
+              ctx.fillStyle = idx === 2 ? '#94a3b8' : color;
+            } else {
+              ctx.fillStyle = color;
+            }
+            ctx.fillText(line, badgeX, lineY);
+          });
 
           ctx.restore();
         }
