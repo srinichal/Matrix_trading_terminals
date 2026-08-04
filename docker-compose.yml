@@ -8,8 +8,8 @@ services:
     image: nifty-planetary-matrix:latest
     container_name: nifty-planetary-matrix
     ports:
-      - "3040:3040"
+      - "3000:3000"
     environment:
       - NODE_ENV=production
-      - PORT=3040
+      - PORT=3000
     restart: unless-stopped

@@ -313,7 +313,6 @@ export default function App() {
         onToggleCollapse={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
         activeTab={activeTab}
         onTabChange={(tab) => setActiveTab(tab)}
-        boxesBadgeCount={boxesBadgeCount}
         activePresetName={activePresetName}
         onSelectPreset={handleSelectPreset}
         onOpenSignalsModal={() => setSignalsModalOpen(true)}

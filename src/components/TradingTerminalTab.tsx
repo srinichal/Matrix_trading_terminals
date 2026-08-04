@@ -47,7 +47,7 @@ import {
   Grid3X3
 } from 'lucide-react';
 import { MatrixData, DepartureEvent, PlanetName, AspectName, BoxWallMatch, SwingPivot, BoxingDate } from '../types';
-import { scanCriticalDates, computeBoxingDates, computeMultiAnchorDates, computeBoxBreakouts, ringToDegree, fromIso, checkCandleWallMatch, computeSyncPricesForWall, SYNC_RING_OFFSETS } from '../lib/matrix';
+import { scanCriticalDates, computeBoxingDates, computeMultiAnchorDates, computeRawBoxingDates, computeBoxBreakouts, ringToDegree, fromIso, checkCandleWallMatch, computeSyncPricesForWall, SYNC_RING_OFFSETS } from '../lib/matrix';
 import { NIFTY_SWINGS } from '../data/niftySwings';
 import { PLANET_META, ASPECT_META, BODY_LIST, getPositions, findAspectAll, daysSinceEpoch, sunGeocentric } from '../lib/astronomy';
 import { getSignal, TIER_META } from '../lib/signals';
@@ -66,6 +66,101 @@ function find42SignalMatch(planet: PlanetName, aspect: AspectName) {
     }
   }
   return best;
+}
+
+const istDateFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Kolkata',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit'
+});
+
+export function getDateStrInIST(time: number | string): string {
+  if (!time) return '';
+  let timeInSec: number;
+  if (typeof time === 'string') {
+    if (time.length >= 10 && time.includes('-')) return time.slice(0, 10);
+    timeInSec = Number(time);
+  } else {
+    timeInSec = time;
+  }
+  if (typeof timeInSec !== 'number' || isNaN(timeInSec) || timeInSec <= 0) return '';
+  try {
+    const date = new Date(timeInSec * 1000);
+    if (isNaN(date.getTime())) return '';
+    return istDateFormatter.format(date);
+  } catch (e) {
+    return '';
+  }
+}
+
+export type TimeZoneType = 'IST' | 'UTC' | 'EST' | 'GMT' | 'LOCAL';
+
+export function formatTimestampInTZ(
+  timeInSec: number,
+  tz: TimeZoneType = 'IST',
+  includeTime = true
+): string {
+  if (!timeInSec || isNaN(timeInSec)) return '';
+  const date = new Date(timeInSec * 1000);
+  if (isNaN(date.getTime())) return '';
+
+  let ianaTz = 'Asia/Kolkata';
+  let tzLabel = 'IST';
+
+  if (tz === 'UTC' || tz === 'GMT') {
+    ianaTz = 'UTC';
+    tzLabel = tz;
+  } else if (tz === 'EST') {
+    ianaTz = 'America/New_York';
+    tzLabel = 'EST';
+  } else if (tz === 'LOCAL') {
+    try {
+      ianaTz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Kolkata';
+      tzLabel = 'LOCAL';
+    } catch (e) {
+      ianaTz = 'Asia/Kolkata';
+      tzLabel = 'IST';
+    }
+  }
+
+  try {
+    const options: Intl.DateTimeFormatOptions = {
+      timeZone: ianaTz,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour12: false
+    };
+    if (includeTime) {
+      options.hour = '2-digit';
+      options.minute = '2-digit';
+      options.second = '2-digit';
+    }
+
+    const formatter = new Intl.DateTimeFormat('en-CA', options);
+    const parts = formatter.formatToParts(date);
+    const map: Record<string, string> = {};
+    parts.forEach((p) => { map[p.type] = p.value; });
+
+    if (includeTime && map.hour !== undefined) {
+      return `${map.year}-${map.month}-${map.day} ${map.hour}:${map.minute}:${map.second} (${tzLabel})`;
+    }
+    return `${map.year}-${map.month}-${map.day}`;
+  } catch (e) {
+    if (tz === 'IST') {
+      const istDate = new Date(date.getTime() + 330 * 60 * 1000);
+      const yyyy = istDate.getUTCFullYear();
+      const mm = String(istDate.getUTCMonth() + 1).padStart(2, '0');
+      const dd = String(istDate.getUTCDate()).padStart(2, '0');
+      if (!includeTime) return `${yyyy}-${mm}-${dd}`;
+      const hh = String(istDate.getUTCHours()).padStart(2, '0');
+      const min = String(istDate.getUTCMinutes()).padStart(2, '0');
+      const ss = String(istDate.getUTCSeconds()).padStart(2, '0');
+      return `${yyyy}-${mm}-${dd} ${hh}:${min}:${ss} (IST)`;
+    }
+    return date.toISOString().replace('T', ' ').slice(0, 19);
+  }
 }
 
 interface TradingTerminalTabProps {
@@ -232,21 +327,30 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
       return true;
     }
   });
-  const [showBoxingDates, setShowBoxingDates] = useState<boolean>(() => {
+  const [showConfluenceDates, setShowConfluenceDates] = useState<boolean>(() => {
     try {
-      const v = localStorage.getItem('tt_showBoxingDates');
+      const v = localStorage.getItem('tt_showConfluenceDates');
       return v !== null ? JSON.parse(v) : true;
     } catch (e) {
       return true;
     }
   });
-  const [boxingKindFilter, setBoxingKindFilter] = useState<'all' | 'perm' | 'strong'>(() => {
+  const [showPermDates, setShowPermDates] = useState<boolean>(() => {
     try {
-      const v = localStorage.getItem('tt_boxingKindFilter');
-      return v ? (JSON.parse(v) as any) : 'all';
+      const v = localStorage.getItem('tt_showPermDates');
+      return v !== null ? JSON.parse(v) : true;
     } catch (e) {
-      return 'all';
+      return true;
     }
+  });
+  const [timeZone, setTimeZone] = useState<TimeZoneType>(() => {
+    try {
+      const saved = localStorage.getItem('tt_timeZone');
+      if (saved && ['IST', 'UTC', 'EST', 'GMT', 'LOCAL'].includes(saved)) {
+        return saved as TimeZoneType;
+      }
+    } catch (e) {}
+    return 'IST';
   });
 
   // Zerodha Kite API parameters
@@ -296,8 +400,9 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
       localStorage.setItem('tt_astroTierFilter', JSON.stringify(astroTierFilter));
       localStorage.setItem('tt_astroDirectionFilter', JSON.stringify(astroDirectionFilter));
       localStorage.setItem('tt_showVolume', JSON.stringify(showVolume));
-      localStorage.setItem('tt_showBoxingDates', JSON.stringify(showBoxingDates));
-      localStorage.setItem('tt_boxingKindFilter', JSON.stringify(boxingKindFilter));
+      localStorage.setItem('tt_showPermDates', JSON.stringify(showPermDates));
+      localStorage.setItem('tt_showConfluenceDates', JSON.stringify(showConfluenceDates));
+      localStorage.setItem('tt_timeZone', timeZone);
       localStorage.setItem('tt_isLivePolling', JSON.stringify(isLivePolling));
       localStorage.setItem('tt_pollIntervalSec', String(pollIntervalSec));
       if (kiteApiKey) localStorage.setItem('tt_kiteApiKey', kiteApiKey);
@@ -314,8 +419,8 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
     astroTierFilter,
     astroDirectionFilter,
     showVolume,
-    showBoxingDates,
-    boxingKindFilter,
+    showPermDates,
+    showConfluenceDates,
     isLivePolling,
     pollIntervalSec,
     kiteApiKey,
@@ -345,7 +450,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
   const isLoadingOlderRef = useRef<boolean>(false);
   const candlesRef = useRef<OHLCCandle[]>(candles);
   const timeframeRef = useRef<TimeframeType>(timeframe);
-  const allSeriesTimesRef = useRef<{ time: number; index: number }[]>([]);
+  const allSeriesTimesRef = useRef<{ time: number; dateStr: string; index: number }[]>([]);
 
   useEffect(() => {
     candlesRef.current = candles;
@@ -555,64 +660,30 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
 
   // 36-Harmonic Boxing Dates Calculation
   const rawBoxingDates = useMemo(() => {
-    // 1. Compute 36-H Matrix Wall Boxing Dates (gives exact projected walls per date)
-    const wallDates = computeBoxingDates(dateFrom, dateTo, permWalls, strongWalls, true);
-
-    // 2. Compute Swing Anchor Confluence Dates
-    const map = new Map<string, SwingPivot>();
-    for (const s of NIFTY_SWINGS) map.set(s.date, s);
-    for (const s of userSwings) map.set(s.date, s);
-    const sortedSwings = Array.from(map.values()).sort((a, b) => a.date.localeCompare(b.date));
-
-    const multiAnchorDates = computeMultiAnchorDates(sortedSwings, dateFrom, dateTo, 18, true);
-
-    const mergedMap = new Map<string, BoxingDate>();
-
-    for (const wd of wallDates) {
-      mergedMap.set(wd.date, { ...wd });
-    }
-
-    for (const mad of multiAnchorDates) {
-      const existing = mergedMap.get(mad.date);
-      if (existing) {
-        existing.swingConfluence = {
-          isConfluence: mad.isConfluence,
-          anchors: mad.anchors,
-          spokeCount: mad.spokeCount,
-          highAnchors: mad.highAnchors,
-          lowAnchors: mad.lowAnchors
-        };
-        if (mad.isConfluence) existing.kind = 'perm';
-      } else {
-        mergedMap.set(mad.date, {
-          date: mad.date,
-          kind: mad.isConfluence ? 'perm' : 'strong',
-          perm: [],
-          strong: [],
-          wallSyncs: [],
-          syncPrices: [],
-          isWeekend: mad.isWeekend,
-          snappedFrom: mad.snappedDate,
-          swingConfluence: {
-            isConfluence: mad.isConfluence,
-            anchors: mad.anchors,
-            spokeCount: mad.spokeCount,
-            highAnchors: mad.highAnchors,
-            lowAnchors: mad.lowAnchors
-          }
-        });
-      }
-    }
-
-    return Array.from(mergedMap.values()).sort((a, b) => a.date.localeCompare(b.date));
+    return computeRawBoxingDates(dateFrom, dateTo, permWalls, strongWalls, userSwings, true);
   }, [dateFrom, dateTo, permWalls, strongWalls, userSwings]);
 
   const filteredBoxingDates = useMemo(() => {
     return rawBoxingDates.filter((bd) => {
-      if (boxingKindFilter !== 'all' && bd.kind !== boxingKindFilter) return false;
+      const isConfluence = bd.swingConfluence?.anchors && bd.swingConfluence.anchors.length > 0;
+      const isPerm = bd.perm && bd.perm.length > 0;
+
+      if (isConfluence && !showConfluenceDates) return false;
+      if (isPerm && !isConfluence && !showPermDates) return false;
+      if (!isConfluence && !isPerm && !showPermDates) return false;
+
       return true;
     });
-  }, [rawBoxingDates, boxingKindFilter]);
+  }, [rawBoxingDates, showConfluenceDates, showPermDates]);
+
+  const confluenceDatesCount = useMemo(
+    () => rawBoxingDates.filter((b) => b.swingConfluence?.anchors && b.swingConfluence.anchors.length > 0).length,
+    [rawBoxingDates]
+  );
+  const permDatesCount = useMemo(
+    () => rawBoxingDates.filter((b) => b.perm && b.perm.length > 0).length,
+    [rawBoxingDates]
+  );
 
   // Gann Box Breakout Channels Calculation
   const gannBoxes = useMemo(() => {
@@ -629,7 +700,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
     const targetCandle = displayCandle;
     if (!targetCandle) return null;
 
-    const dateStr = targetCandle.timeStr.slice(0, 10);
+    const dateStr = targetCandle.time ? getDateStrInIST(targetCandle.time) : targetCandle.timeStr.slice(0, 10);
     const hoverPrice = targetCandle.close;
 
     // Find closest wall among Main Walls (permWalls) and Strong Walls (strongWalls)
@@ -904,7 +975,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
   }, [matrix, dateFrom, dateTo, priceLo, priceHi, orb, minHighlight]);
 
   const filteredAstroEvents = useMemo(() => {
-    const visibleCandleDates = new Set(candles.map((c) => c.timeStr.slice(0, 10)));
+    const visibleCandleDates = new Set(candles.map((c) => getDateStrInIST(c.time)));
     return rawAstroEvents
       .filter((ev) => {
         if (!ev.sig) return false;
@@ -932,18 +1003,30 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
     const chart = chartRef.current;
     if (!chart) return null;
 
-    const targetMs = new Date(targetDateStr + 'T00:00:00Z').getTime();
-    if (isNaN(targetMs)) return null;
-    const targetSec = Math.floor(targetMs / 1000);
-
     const seriesTimes = allSeriesTimesRef.current;
     if (seriesTimes.length > 0) {
+      // 1. Try exact match for targetDateStr in IST
+      const exactMatch = seriesTimes.find((s) => s.dateStr === targetDateStr);
+      if (exactMatch) {
+        return chart.timeScale().logicalToCoordinate(exactMatch.index);
+      }
+
+      // 2. If targetDateStr is a weekend/holiday, find the first bar whose IST date >= targetDateStr
+      const nextMatch = seriesTimes.find((s) => s.dateStr >= targetDateStr);
+      if (nextMatch) {
+        return chart.timeScale().logicalToCoordinate(nextMatch.index);
+      }
+
+      // 3. Fallback: closest bar in series
+      const targetSec = Math.floor(new Date(targetDateStr + 'T00:00:00Z').getTime() / 1000);
       let closestIndex = -1;
-      let minDiff = 4 * 86400; // 4 days max tolerance for weekend/holiday snapping
+      let minDiff = Infinity;
 
       for (let i = 0; i < seriesTimes.length; i++) {
         const item = seriesTimes[i];
-        const diff = Math.abs(item.time - targetSec);
+        const itemSec = typeof item.time === 'number' ? item.time : Math.floor(new Date(String(item.time) + 'T00:00:00Z').getTime() / 1000);
+        if (isNaN(itemSec)) continue;
+        const diff = Math.abs(itemSec - targetSec);
         if (diff < minDiff) {
           minDiff = diff;
           closestIndex = item.index;
@@ -958,6 +1041,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
     const currentCandles = candlesRef.current;
     if (currentCandles.length === 0) return null;
 
+    const targetSec = Math.floor(new Date(targetDateStr + 'T00:00:00Z').getTime() / 1000);
     const lastCandle = currentCandles[currentCandles.length - 1];
     const calendarDaysDiff = (targetSec - lastCandle.time) / 86400;
 
@@ -1000,7 +1084,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
     ctx.clearRect(0, 0, width, height);
 
     // Boxing Dates as clean vertical lines with top date badges across chart canvas
-    if (showBoxingDates) {
+    if (showPermDates || showConfluenceDates) {
       let lastX = -999;
       let lastYLevel = 0;
 
@@ -1015,23 +1099,33 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
       dateMap.forEach((bdList, dateStr) => {
         const x = findXCoordinateForDate(dateStr) ?? (bdList[0].snappedFrom ? findXCoordinateForDate(bdList[0].snappedFrom) : null);
         if (x !== null && x >= -30 && x <= width + 30) {
-          const isPerm = bdList.some((b) => b.kind === 'perm');
+          const hasConfluence = bdList.some((b) => b.swingConfluence?.anchors && b.swingConfluence.anchors.length > 0);
+          const isPerm = bdList.some((b) => b.perm && b.perm.length > 0) || bdList.some((b) => b.kind === 'perm');
           const dowStr = getDowStr(dateStr);
 
           // Check if any candle on this 36-H boxing date hits a price-date wall match
           const candlesOnDate = candlesRef.current.filter((c) => {
-            const cDate = c.timeStr ? c.timeStr.slice(0, 10) : '';
+            const cDate = getDateStrInIST(c.time);
             return cDate === dateStr || (bdList[0]?.snappedFrom && cDate === bdList[0].snappedFrom);
           });
           const allWallMatches = bdList.flatMap((b) => candlesOnDate.flatMap((c) => checkCandleWallMatch(c, b)));
           const hasWallMatch = allWallMatches.length > 0;
 
-          let color = isPerm ? '#f59e0b' : '#14b8a6';
-          let tagText = isPerm ? `🥊 PERM ${dateStr.slice(5)} (${dowStr})` : `📅 BOXING ${dateStr.slice(5)} (${dowStr})`;
+          let color = '#f59e0b';
+          let tagText = `🥊 PERM ${dateStr.slice(5)} (${dowStr})`;
+
+          if (hasConfluence) {
+            const anchorCount = bdList.reduce((acc, b) => acc + (b.swingConfluence?.anchors?.length || 0), 0);
+            color = '#c084fc';
+            tagText = `◈ CONF${anchorCount > 1 ? ` (${anchorCount})` : ''} ${dateStr.slice(5)} (${dowStr})`;
+          } else if (isPerm) {
+            color = '#f59e0b';
+            tagText = `🥊 PERM ${dateStr.slice(5)} (${dowStr})`;
+          }
 
           if (hasWallMatch) {
-            color = '#f59e0b';
-            tagText = `⭐ SPECIAL ${dateStr.slice(5)} (${dowStr})`;
+            color = '#fbbf24';
+            tagText += ' ⭐';
           }
 
           ctx.save();
@@ -1061,7 +1155,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
           ctx.lineTo(x, height - 26);
           ctx.stroke();
 
-          // Draw compact 1-line pill tag box
+          // Draw compact 1-line pill tag box (Vertical Label)
           const badgeX = Math.max(badgeWidth / 2 + 4, Math.min(width - badgeWidth / 2 - 4, x));
 
           // Badge Background box
@@ -1086,7 +1180,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
     }
 
     ctx.restore();
-  }, [showBoxingDates, filteredBoxingDates, findXCoordinateForDate]);
+  }, [showPermDates, showConfluenceDates, filteredBoxingDates, findXCoordinateForDate]);
 
   useEffect(() => {
     redrawLeaderCalloutsRef.current = redrawLeaderCallouts;
@@ -1220,6 +1314,9 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
         vertLines: { color: 'rgba(51, 65, 85, 0.25)' },
         horzLines: { color: 'rgba(51, 65, 85, 0.25)' }
       },
+      localization: {
+        timeFormatter: (timeSec: number) => formatTimestampInTZ(timeSec, timeZone, timeframe !== '1d')
+      },
       crosshair: {
         mode: 1
       },
@@ -1287,7 +1384,9 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
           loadOlderHistory();
         }
       }
-      requestAnimationFrame(redrawLeaderCallouts);
+      if (redrawLeaderCalloutsRef.current) {
+        requestAnimationFrame(() => redrawLeaderCalloutsRef.current());
+      }
     };
     chart.timeScale().subscribeVisibleLogicalRangeChange(handleLogicalRangeChange);
 
@@ -1306,7 +1405,9 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
           setCrosshairPoint(null);
         }
       }
-      requestAnimationFrame(redrawLeaderCallouts);
+      if (redrawLeaderCalloutsRef.current) {
+        requestAnimationFrame(() => redrawLeaderCalloutsRef.current());
+      }
     });
 
     // Resize observer
@@ -1319,7 +1420,9 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
           width: clientWidth,
           height: clientHeight > 100 ? clientHeight : fallbackH
         });
-        requestAnimationFrame(redrawLeaderCallouts);
+        if (redrawLeaderCalloutsRef.current) {
+          requestAnimationFrame(() => redrawLeaderCalloutsRef.current());
+        }
       }
     };
 
@@ -1345,6 +1448,20 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
       }
     };
   }, [isPopout]);
+
+  // Apply chart option updates when timeZone or timeframe changes
+  useEffect(() => {
+    if (chartRef.current) {
+      chartRef.current.applyOptions({
+        localization: {
+          timeFormatter: (timeSec: number) => formatTimestampInTZ(timeSec, timeZone, timeframe !== '1d')
+        }
+      });
+      if (redrawLeaderCalloutsRef.current) {
+        requestAnimationFrame(redrawLeaderCalloutsRef.current);
+      }
+    }
+  }, [timeZone, timeframe]);
 
   // 2. Update Series Data, Price Lines & Astro Markers without resetting Zoom or Re-creating Chart
   useEffect(() => {
@@ -1382,6 +1499,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
 
     allSeriesTimesRef.current = combinedSeriesData.map((s, idx) => ({
       time: s.time as number,
+      dateStr: getDateStrInIST(s.time as number),
       index: idx
     }));
 
@@ -1440,7 +1558,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
     }
 
     // Set or Clear Boxing Date Markers on Candlestick Chart (Astro markers removed from chart per request)
-    const hasBoxingMarkers = showBoxingDates && filteredBoxingDates.length > 0;
+    const hasBoxingMarkers = (showPermDates || showConfluenceDates) && filteredBoxingDates.length > 0;
 
     if (hasBoxingMarkers && candles.length > 0) {
       const dateToTimestamp = new Map<string, Time>();
@@ -1587,7 +1705,8 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
     showPermWalls,
     showStrongWalls,
     showAstroSignals,
-    showBoxingDates,
+    showPermDates,
+    showConfluenceDates,
     showVolume,
     filteredAstroEvents,
     filteredBoxingDates
@@ -1599,61 +1718,64 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
   return (
     <div className={isPopout ? "fixed inset-0 z-50 bg-[#070a14] p-2 sm:p-3 overflow-y-auto flex flex-col h-screen space-y-2 shadow-2xl animate-in fade-in duration-200" : "flex-1 flex flex-col h-full min-h-0 space-y-2 overflow-hidden"}>
       {/* Top Controls Bar */}
-      <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-2.5 shadow-xl backdrop-blur-md shrink-0 space-y-2">
-        {/* Row 1: Connection & Timeframe & Chart View Controls */}
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800/80 pb-2">
-          {/* Group 1: Data Source & Live Sync Controls */}
+      <div className="bg-slate-900/95 border border-slate-800/90 rounded-xl p-2.5 shadow-2xl backdrop-blur-md shrink-0 space-y-2">
+        {/* Row 1: Data Connection & View Settings */}
+        <div className="flex flex-wrap items-center justify-between gap-2.5 border-b border-slate-800/80 pb-2">
+          {/* Group 1: Data Feed & Sync */}
           <div className="flex items-center gap-1.5 flex-wrap">
-            <div className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-400 text-slate-950 rounded-md font-mono text-xs font-bold shadow-md shadow-amber-400/20">
+            <div className="flex items-center gap-1.5 px-2.5 py-1 bg-gradient-to-r from-amber-400 to-amber-500 text-slate-950 rounded-lg font-mono text-xs font-bold shadow-md shadow-amber-400/20">
               <Key className="w-3.5 h-3.5" />
               <span>Zerodha Kite</span>
             </div>
 
-            <button
-              onClick={() => {
-                setIsLivePolling(!isLivePolling);
-                if (!isLivePolling) loadCandles(true);
-              }}
-              title={isLivePolling ? `Live Auto-Sync Active (Every ${pollIntervalSec}s)` : "Click to enable Live Auto-Sync"}
-              className={`flex items-center gap-1.5 px-2 py-1 rounded-md font-mono text-xs font-bold transition-all border ${
-                isLivePolling
-                  ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40 shadow-sm shadow-emerald-500/10'
-                  : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-200'
-              }`}
-            >
-              <span className={`w-2 h-2 rounded-full ${isLivePolling ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
-              <span>{isLivePolling ? `LIVE ${pollIntervalSec}s` : 'PAUSED'}</span>
-            </button>
+            {/* Live Auto-Sync Switch & Interval */}
+            <div className="flex items-center gap-1 bg-slate-950 p-0.5 rounded-lg border border-slate-800">
+              <button
+                onClick={() => {
+                  setIsLivePolling(!isLivePolling);
+                  if (!isLivePolling) loadCandles(true);
+                }}
+                title={isLivePolling ? `Live Auto-Sync Active (Every ${pollIntervalSec}s)` : "Click to enable Live Auto-Sync"}
+                className={`flex items-center gap-1.5 px-2 py-0.5 rounded-md font-mono text-xs font-bold transition-all ${
+                  isLivePolling
+                    ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <span className={`w-2 h-2 rounded-full ${isLivePolling ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
+                <span>{isLivePolling ? `LIVE` : 'PAUSED'}</span>
+              </button>
 
-            <select
-              value={pollIntervalSec}
-              onChange={(e) => setPollIntervalSec(Math.max(1, Number(e.target.value)))}
-              className="bg-slate-950 border border-slate-800 text-amber-300 font-mono text-xs font-semibold rounded px-1.5 py-1 focus:outline-none focus:border-amber-500/50 cursor-pointer"
-              title="Set Auto-Sync Refresh Interval"
-            >
-              <option value={1}>1s</option>
-              <option value={2}>2s</option>
-              <option value={3}>3s</option>
-              <option value={5}>5s</option>
-              <option value={10}>10s</option>
-              <option value={15}>15s</option>
-              <option value={30}>30s</option>
-              <option value={60}>60s</option>
-            </select>
+              <select
+                value={pollIntervalSec}
+                onChange={(e) => setPollIntervalSec(Math.max(1, Number(e.target.value)))}
+                className="bg-slate-900 text-amber-300 font-mono text-xs font-bold rounded px-1.5 py-0.5 focus:outline-none focus:border-amber-500/50 cursor-pointer border-0"
+                title="Auto-Sync Interval"
+              >
+                <option value={1}>1s</option>
+                <option value={2}>2s</option>
+                <option value={3}>3s</option>
+                <option value={5}>5s</option>
+                <option value={10}>10s</option>
+                <option value={15}>15s</option>
+                <option value={30}>30s</option>
+                <option value={60}>60s</option>
+              </select>
+            </div>
 
             <button
               onClick={() => loadCandles(false)}
               title="Manual Refresh Market Candles"
-              className="p-1 text-slate-400 hover:text-amber-300 rounded hover:bg-slate-950 border border-slate-800 transition-colors"
+              className="p-1.5 text-slate-400 hover:text-amber-300 rounded-lg bg-slate-950 hover:bg-slate-900 border border-slate-800 transition-colors"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin text-amber-400' : ''}`} />
             </button>
 
             <button
               onClick={() => setShowConfigPanel(!showConfigPanel)}
-              className={`flex items-center gap-1 px-2 py-1 rounded-md font-mono text-xs font-semibold border transition-all ${
+              className={`flex items-center gap-1 px-2.5 py-1 rounded-lg font-mono text-xs font-semibold border transition-all ${
                 showConfigPanel
-                  ? 'bg-slate-800 text-amber-300 border-amber-500/50'
+                  ? 'bg-slate-800 text-amber-300 border-amber-500/50 shadow-sm'
                   : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-200'
               }`}
             >
@@ -1663,91 +1785,119 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
             <button
               onClick={() => setWallsModalOpen(true)}
               title="Open Matrix Planetary Walls & Aspect Catalog"
-              className="flex items-center gap-1.5 px-2 py-1 rounded-md font-mono text-xs font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/30 hover:bg-amber-500/20 transition-all"
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg font-mono text-xs font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/30 hover:bg-amber-500/20 transition-all shadow-sm"
             >
               <Grid3X3 className="w-3.5 h-3.5 text-amber-400" />
               <span>Matrix Walls</span>
             </button>
           </div>
 
-          {/* Group 2: Timeframe Selector */}
-          <div className="flex items-center gap-1 bg-slate-950/80 p-1 rounded-lg border border-slate-800">
-            <span className="text-[10px] font-mono text-slate-400 px-2 uppercase tracking-wider flex items-center gap-1">
-              <Clock className="w-3 h-3 text-amber-400" /> TF:
-            </span>
-            {(['15m', '30m', '1h', '1d'] as TimeframeType[]).map((tf) => (
+          {/* Group 2: Timeframe, Timezone & Zoom Controls */}
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Timeframe Selector */}
+            <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-lg border border-slate-800">
+              <span className="text-[10px] font-mono text-slate-500 px-1.5 font-bold uppercase tracking-wider flex items-center gap-1">
+                <Clock className="w-3 h-3 text-amber-400" /> TF:
+              </span>
+              {(['15m', '30m', '1h', '1d'] as TimeframeType[]).map((tf) => (
+                <button
+                  key={tf}
+                  onClick={() => setTimeframe(tf)}
+                  className={`px-2 py-0.5 text-xs font-mono rounded font-semibold transition-all ${
+                    timeframe === tf
+                      ? 'bg-amber-400 text-slate-950 font-bold shadow-sm shadow-amber-400/20'
+                      : 'text-slate-400 hover:text-amber-300'
+                  }`}
+                >
+                  {tf.toUpperCase()}
+                </button>
+              ))}
+            </div>
+
+            {/* Timezone Selector */}
+            <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-lg border border-slate-800">
+              <span className="text-[10px] font-mono text-slate-500 px-1 font-bold uppercase tracking-wider flex items-center gap-1">
+                <Globe className="w-3 h-3 text-amber-400" /> TZ:
+              </span>
+              <select
+                value={timeZone}
+                onChange={(e) => setTimeZone(e.target.value as TimeZoneType)}
+                className="bg-slate-900 border border-slate-800 text-amber-300 font-mono text-xs font-semibold rounded px-2 py-0.5 focus:outline-none focus:border-amber-400 cursor-pointer"
+                title="Terminal Timezone Setting (Default: IST)"
+              >
+                <option value="IST">🇮🇳 IST (+5:30)</option>
+                <option value="UTC">🌐 UTC (+00:00)</option>
+                <option value="EST">🇺🇸 EST (-05:00)</option>
+                <option value="GMT">🇬🇧 GMT (+00:00)</option>
+                <option value="LOCAL">💻 Local</option>
+              </select>
+            </div>
+
+            {/* Zoom & Popout Toolbar */}
+            <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-lg border border-slate-800">
               <button
-                key={tf}
-                onClick={() => setTimeframe(tf)}
-                className={`px-2.5 py-1 text-xs font-mono rounded-md font-semibold transition-all ${
-                  timeframe === tf
-                    ? 'bg-teal-500 text-slate-950 font-bold'
-                    : 'text-slate-400 hover:text-teal-300'
+                onClick={handleZoomIn}
+                title="Zoom In (+)"
+                className="p-1 text-slate-400 hover:text-amber-300 rounded hover:bg-slate-900 transition-colors"
+              >
+                <ZoomIn className="w-3.5 h-3.5" />
+              </button>
+
+              <button
+                onClick={handleZoomOut}
+                title="Zoom Out (-)"
+                className="p-1 text-slate-400 hover:text-amber-300 rounded hover:bg-slate-900 transition-colors"
+              >
+                <ZoomOut className="w-3.5 h-3.5" />
+              </button>
+
+              <button
+                onClick={handleResetZoom}
+                title="Fit All Content / Reset Zoom"
+                className="p-1 text-slate-400 hover:text-amber-300 rounded hover:bg-slate-900 transition-colors"
+              >
+                <RotateCcw className="w-3 h-3" />
+              </button>
+
+              <div className="h-3.5 w-px bg-slate-800 mx-0.5" />
+
+              <button
+                onClick={() => setIsPopout(!isPopout)}
+                title={isPopout ? 'Exit Fullscreen Popout (ESC)' : 'Popout Fullscreen Terminal'}
+                className={`flex items-center gap-1 px-2 py-0.5 rounded font-mono text-xs font-bold transition-all ${
+                  isPopout
+                    ? 'bg-amber-400 text-slate-950 shadow-md shadow-amber-400/20'
+                    : 'text-slate-300 bg-slate-900 hover:bg-slate-800 border border-slate-700'
                 }`}
               >
-                {tf.toUpperCase()}
+                {isPopout ? (
+                  <>
+                    <Minimize2 className="w-3 h-3" /> Exit
+                  </>
+                ) : (
+                  <>
+                    <Maximize2 className="w-3 h-3 text-amber-400" /> Popout
+                  </>
+                )}
               </button>
-            ))}
-          </div>
-
-          {/* Group 3: Zoom & Popout Controls */}
-          <div className="flex items-center gap-1.5 bg-slate-950/80 p-1 rounded-lg border border-slate-800">
-            <button
-              onClick={handleZoomIn}
-              title="Zoom In (+)"
-              className="p-1.5 text-slate-400 hover:text-amber-300 rounded hover:bg-slate-900 transition-colors"
-            >
-              <ZoomIn className="w-4 h-4" />
-            </button>
-
-            <button
-              onClick={handleZoomOut}
-              title="Zoom Out (-)"
-              className="p-1.5 text-slate-400 hover:text-amber-300 rounded hover:bg-slate-900 transition-colors"
-            >
-              <ZoomOut className="w-4 h-4" />
-            </button>
-
-            <button
-              onClick={handleResetZoom}
-              title="Fit All Content / Reset Zoom"
-              className="p-1.5 text-slate-400 hover:text-amber-300 rounded hover:bg-slate-900 transition-colors"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-            </button>
-
-            <button
-              onClick={() => setIsPopout(!isPopout)}
-              title={isPopout ? 'Exit Fullscreen Popout (ESC)' : 'Popout Fullscreen Terminal'}
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md font-mono text-xs font-bold transition-all ${
-                isPopout
-                  ? 'bg-amber-400 text-slate-950 shadow-md shadow-amber-400/20'
-                  : 'text-slate-300 bg-slate-900 hover:bg-slate-800 border border-slate-700'
-              }`}
-            >
-              {isPopout ? (
-                <>
-                  <Minimize2 className="w-3.5 h-3.5" /> Exit Popout
-                </>
-              ) : (
-                <>
-                  <Maximize2 className="w-3.5 h-3.5 text-amber-400" /> Popout Terminal
-                </>
-              )}
-            </button>
+            </div>
           </div>
         </div>
 
-        {/* Row 2: Overlays Toggles & Reload Actions Bar */}
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          {/* Overlays Toggles */}
-          <div className="flex items-center gap-2 flex-wrap">
+        {/* Row 2: Chart Overlays Toolbar */}
+        <div className="bg-slate-950/70 border border-slate-800/80 p-1.5 rounded-lg flex flex-wrap items-center justify-between gap-2">
+          {/* Left: Overlays & Filters Group */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-[10px] font-mono text-slate-500 font-bold uppercase tracking-wider px-1.5 flex items-center gap-1">
+              <Layers className="w-3 h-3 text-amber-400" /> Overlays:
+            </span>
+
             <button
               onClick={() => setShowPermWalls(!showPermWalls)}
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg font-mono text-[11px] font-semibold border transition-all ${
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md font-mono text-[11px] font-semibold border transition-all ${
                 showPermWalls
-                  ? 'bg-amber-500/15 text-amber-300 border-amber-500/40'
-                  : 'bg-slate-950 text-slate-500 border-slate-800'
+                  ? 'bg-amber-500/15 text-amber-300 border-amber-500/40 shadow-sm'
+                  : 'bg-slate-900 text-slate-500 border-slate-800 hover:text-slate-400'
               }`}
             >
               <Shield className="w-3 h-3 text-amber-400" />
@@ -1756,10 +1906,10 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
 
             <button
               onClick={() => setShowStrongWalls(!showStrongWalls)}
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg font-mono text-[11px] font-semibold border transition-all ${
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md font-mono text-[11px] font-semibold border transition-all ${
                 showStrongWalls
-                  ? 'bg-slate-700/30 text-slate-200 border-slate-600/40'
-                  : 'bg-slate-950 text-slate-500 border-slate-800'
+                  ? 'bg-slate-700/30 text-slate-200 border-slate-600/50 shadow-sm'
+                  : 'bg-slate-900 text-slate-500 border-slate-800 hover:text-slate-400'
               }`}
             >
               <Layers className="w-3 h-3 text-slate-400" />
@@ -1767,47 +1917,50 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
             </button>
 
             <button
+              onClick={() => setShowConfluenceDates(!showConfluenceDates)}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md font-mono text-[11px] font-semibold border transition-all ${
+                showConfluenceDates
+                  ? 'bg-purple-500/15 text-purple-300 border-purple-500/40 shadow-sm'
+                  : 'bg-slate-900 text-slate-500 border-slate-800 hover:text-slate-400'
+              }`}
+              title="Toggle Swing Confluence Anchors / Vertical Lines"
+            >
+              <Sparkles className="w-3 h-3 text-purple-400" />
+              Swing Confluence ({confluenceDatesCount})
+            </button>
+
+            <button
+              onClick={() => setShowPermDates(!showPermDates)}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md font-mono text-[11px] font-semibold border transition-all ${
+                showPermDates
+                  ? 'bg-amber-500/15 text-amber-300 border-amber-500/40 shadow-sm'
+                  : 'bg-slate-900 text-slate-500 border-slate-800 hover:text-slate-400'
+              }`}
+              title="Toggle Permanent Boxing Dates / Vertical Lines"
+            >
+              <CalendarDays className="w-3 h-3 text-amber-400" />
+              Perm Dates ({permDatesCount})
+            </button>
+
+            <button
               onClick={() => setShowAstroSignals(!showAstroSignals)}
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg font-mono text-[11px] font-semibold border transition-all ${
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md font-mono text-[11px] font-semibold border transition-all ${
                 showAstroSignals
-                  ? 'bg-purple-500/15 text-purple-300 border-purple-500/40'
-                  : 'bg-slate-950 text-slate-500 border-slate-800'
+                  ? 'bg-purple-500/15 text-purple-300 border-purple-500/40 shadow-sm'
+                  : 'bg-slate-900 text-slate-500 border-slate-800 hover:text-slate-400'
               }`}
               title="Highlight 42-Signal matches in hover tooltip"
             >
               <Sparkles className="w-3 h-3 text-purple-400" />
-              42-Signals (Tooltip)
+              42-Signals
             </button>
-
-            {/* Unified Single Boxing Dates Filter Dropdown */}
-            <div className="flex items-center gap-1.5 bg-slate-950 p-1 rounded-lg border border-slate-800">
-              <CalendarDays className="w-3.5 h-3.5 text-amber-400 ml-1.5" />
-              <select
-                value={showBoxingDates ? boxingKindFilter : 'off'}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  if (val === 'off') {
-                    setShowBoxingDates(false);
-                  } else {
-                    setShowBoxingDates(true);
-                    setBoxingKindFilter(val as any);
-                  }
-                }}
-                className="bg-slate-900 border border-amber-400/30 text-amber-300 font-mono text-[11px] font-semibold rounded px-2.5 py-1 focus:outline-none focus:border-amber-400 cursor-pointer"
-                title="Single Boxing Dates Filter"
-              >
-                <option value="all">🥊 Boxing: All ({rawBoxingDates.length})</option>
-                <option value="perm">🥇 Perm Only ({rawBoxingDates.filter((b) => b.kind === 'perm').length})</option>
-                <option value="strong">⚡ Strong Only ({rawBoxingDates.filter((b) => b.kind === 'strong').length})</option>
-                <option value="off">❌ Boxing: Off</option>
-              </select>
-            </div>
           </div>
 
+          {/* Right: Data Reload Button */}
           <button
             onClick={() => loadCandles(false)}
             disabled={isLoading}
-            className="flex items-center gap-1.5 px-3.5 py-1 rounded-lg font-mono text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-300 transition-all shadow-md shadow-amber-400/20 disabled:opacity-50"
+            className="flex items-center gap-1.5 px-3 py-1 rounded-md font-mono text-xs font-bold text-slate-950 bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-300 hover:to-amber-400 transition-all shadow-md shadow-amber-400/20 disabled:opacity-50 shrink-0"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
             Reload Data
@@ -1981,124 +2134,136 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
 
       {/* Active Candle Hover Info & Planetary Wall Tooltip Bar */}
       {displayCandle && (
-        <div className="bg-slate-900/95 border border-slate-800 rounded-xl p-3 sm:p-3.5 space-y-2 font-mono text-xs shadow-xl shrink-0">
-          {/* Header Row: Date & Time, OHLCV, Change %, Status */}
-          <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="bg-slate-900/95 border border-slate-800/90 rounded-xl p-3 space-y-2.5 font-mono text-xs shadow-2xl shrink-0 backdrop-blur-md">
+          {/* Header Row: Timestamp, Status Badge, OHLCV Mini-Cards */}
+          <div className="flex flex-wrap items-center justify-between gap-2.5">
+            {/* Timestamp & Hover Mode */}
             <div className="flex items-center gap-2">
-              <Clock className="w-4 h-4 text-amber-400" />
-              <span className="text-amber-200 font-bold text-xs sm:text-sm">{displayCandle.timeStr}</span>
-              <span className={`text-[10px] px-2 py-0.5 rounded font-bold uppercase tracking-wider ${
-                activeHoverCandle ? 'bg-amber-400/20 text-amber-300 border border-amber-400/30' : 'bg-slate-800 text-slate-400'
+              <div className="flex items-center gap-1.5 bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-800">
+                <Clock className="w-3.5 h-3.5 text-amber-400" />
+                <span className="text-amber-200 font-bold text-xs sm:text-sm">
+                  {formatTimestampInTZ(displayCandle.time, timeZone, timeframe !== '1d')}
+                </span>
+                <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20 font-bold">
+                  {timeZone}
+                </span>
+              </div>
+
+              <span className={`text-[10px] px-2 py-1 rounded-lg font-bold uppercase tracking-wider ${
+                activeHoverCandle ? 'bg-amber-400/20 text-amber-300 border border-amber-400/30' : 'bg-slate-950 text-slate-400 border border-slate-800'
               }`}>
-                {activeHoverCandle ? 'Active Hover' : 'Latest Market Candle'}
+                {activeHoverCandle ? 'Active Hover' : 'Latest Candle'}
               </span>
+
+              {lastFetchedInfo && (
+                <div className="text-[10px] text-teal-300 bg-teal-500/10 px-2 py-0.5 rounded-lg border border-teal-500/20 hidden sm:block">
+                  {lastFetchedInfo}
+                </div>
+              )}
             </div>
 
-            <div className="flex items-center gap-3 sm:gap-5 flex-wrap">
-              <div>
-                <span className="text-slate-500 text-[10px] uppercase block">Open</span>
-                <span className="text-slate-200 font-semibold">{displayCandle.open.toLocaleString()}</span>
+            {/* OHLCV Metric Cards */}
+            <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
+              <div className="bg-slate-950 border border-slate-800/80 rounded-lg px-2.5 py-0.5">
+                <span className="text-slate-500 text-[9px] uppercase font-bold block leading-none">Open</span>
+                <span className="text-slate-200 font-bold text-xs">{displayCandle.open.toLocaleString()}</span>
               </div>
 
-              <div>
-                <span className="text-slate-500 text-[10px] uppercase block">High</span>
-                <span className="text-emerald-400 font-semibold">{displayCandle.high.toLocaleString()}</span>
+              <div className="bg-slate-950 border border-slate-800/80 rounded-lg px-2.5 py-0.5">
+                <span className="text-slate-500 text-[9px] uppercase font-bold block leading-none">High</span>
+                <span className="text-emerald-400 font-bold text-xs">{displayCandle.high.toLocaleString()}</span>
               </div>
 
-              <div>
-                <span className="text-slate-500 text-[10px] uppercase block">Low</span>
-                <span className="text-rose-400 font-semibold">{displayCandle.low.toLocaleString()}</span>
+              <div className="bg-slate-950 border border-slate-800/80 rounded-lg px-2.5 py-0.5">
+                <span className="text-slate-500 text-[9px] uppercase font-bold block leading-none">Low</span>
+                <span className="text-rose-400 font-bold text-xs">{displayCandle.low.toLocaleString()}</span>
               </div>
 
-              <div>
-                <span className="text-slate-500 text-[10px] uppercase block">Close</span>
-                <span className={`font-bold ${displayCandle.close >= displayCandle.open ? 'text-emerald-400' : 'text-rose-400'}`}>
+              <div className="bg-slate-950 border border-slate-800/80 rounded-lg px-2.5 py-0.5">
+                <span className="text-slate-500 text-[9px] uppercase font-bold block leading-none">Close</span>
+                <span className={`font-bold text-xs ${displayCandle.close >= displayCandle.open ? 'text-emerald-400' : 'text-rose-400'}`}>
                   {displayCandle.close.toLocaleString()}
                 </span>
               </div>
 
-              <div>
-                <span className="text-slate-500 text-[10px] uppercase block">Change</span>
-                <span className={`font-semibold ${displayCandle.close >= displayCandle.open ? 'text-emerald-400' : 'text-rose-400'}`}>
+              <div className="bg-slate-950 border border-slate-800/80 rounded-lg px-2.5 py-0.5">
+                <span className="text-slate-500 text-[9px] uppercase font-bold block leading-none">Change</span>
+                <span className={`font-bold text-xs ${displayCandle.close >= displayCandle.open ? 'text-emerald-400' : 'text-rose-400'}`}>
                   {(displayCandle.close - displayCandle.open >= 0 ? '+' : '')}
                   {(displayCandle.close - displayCandle.open).toFixed(2)} (
                   {(((displayCandle.close - displayCandle.open) / displayCandle.open) * 100).toFixed(2)}%)
                 </span>
               </div>
 
-              <div>
-                <span className="text-slate-500 text-[10px] uppercase block">Volume</span>
-                <span className="text-sky-300">{displayCandle.volume.toLocaleString()}</span>
+              <div className="bg-slate-950 border border-slate-800/80 rounded-lg px-2.5 py-0.5">
+                <span className="text-slate-500 text-[9px] uppercase font-bold block leading-none">Volume</span>
+                <span className="text-sky-300 font-bold text-xs">{displayCandle.volume.toLocaleString()}</span>
               </div>
             </div>
-
-            {lastFetchedInfo && (
-              <div className="text-[11px] text-teal-300/80 bg-teal-500/10 px-2.5 py-1 rounded border border-teal-500/20">
-                {lastFetchedInfo}
-              </div>
-            )}
           </div>
 
-          {/* Matrix Planet Aspects & Boxing Info Row */}
+          {/* Matrix Planet Aspects & Astro Harmonics Info Panel */}
           {hoverAstroInfo && (
-            <div className="border-t border-slate-800/80 pt-2.5 space-y-2 font-mono text-[11px]">
-              {/* Row 1: Planets at Pressure & Wall Distance Gap */}
+            <div className="bg-slate-950/60 border border-slate-800/80 rounded-lg p-2.5 space-y-2 font-mono text-[11px]">
+              {/* Row 1: Planets at Pressure */}
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-amber-400 font-bold flex items-center gap-1 uppercase text-[10px] tracking-wider">
-                    <Sparkles className="w-3.5 h-3.5" />
-                    <span>
+                  <div className="flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                    <span className="text-amber-300 font-bold uppercase text-[10px] tracking-wider">
                       PLANETS AT PRESSURE ({hoverAstroInfo.closestWall.type} @ {hoverAstroInfo.closestWall.price.toLocaleString()}):
                     </span>
-                  </span>
-                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${
-                    hoverAstroInfo.closestWall.distance === 0
-                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-                      : 'bg-amber-500/10 text-amber-300 border-amber-500/30'
-                  }`}>
-                    {hoverAstroInfo.closestWall.distance === 0 ? 'Exact Wall Hit' : `Gap ±${hoverAstroInfo.closestWall.distance} pts`}
-                  </span>
+                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${
+                      hoverAstroInfo.closestWall.distance === 0
+                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                        : 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                    }`}>
+                      {hoverAstroInfo.closestWall.distance === 0 ? 'Exact Wall Hit' : `Gap ±${hoverAstroInfo.closestWall.distance} pts`}
+                    </span>
+                  </div>
 
-                  {hoverAstroInfo.wallAspectHits.length > 0 ? (
-                    hoverAstroInfo.wallAspectHits.map((hit, idx) => {
-                      const pMeta = PLANET_META[hit.p];
-                      const aspMeta = ASPECT_META[hit.a];
-                      const sigMatch = find42SignalMatch(hit.p, hit.a);
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {hoverAstroInfo.wallAspectHits.length > 0 ? (
+                      hoverAstroInfo.wallAspectHits.map((hit, idx) => {
+                        const pMeta = PLANET_META[hit.p];
+                        const aspMeta = ASPECT_META[hit.a];
+                        const sigMatch = find42SignalMatch(hit.p, hit.a);
 
-                      return (
-                        <div
-                          key={idx}
-                          className={`flex items-center gap-1.5 px-2 py-0.5 rounded font-mono text-[11px] transition-all ${
-                            sigMatch
-                              ? 'bg-amber-500/20 border-2 border-amber-400 text-amber-200 shadow-md shadow-amber-500/20'
-                              : 'bg-slate-950 border border-slate-800'
-                          }`}
-                        >
-                          <span className="w-2 h-2 rounded-full" style={{ backgroundColor: aspMeta?.color || '#888' }} />
-                          <span style={{ color: pMeta?.color || '#fff' }}>{pMeta?.sym}</span>
-                          <span className="text-slate-200 font-medium">{hit.p}</span>
-                          <span style={{ color: aspMeta?.color || '#ccc' }}>{aspMeta?.abbr || hit.a}</span>
-                          <span className="text-slate-500 text-[10px]">({hit.o}°)</span>
+                        return (
+                          <div
+                            key={idx}
+                            className={`flex items-center gap-1.5 px-2 py-0.5 rounded-md font-mono text-[11px] transition-all ${
+                              sigMatch
+                                ? 'bg-amber-500/20 border border-amber-400 text-amber-200 shadow-md shadow-amber-500/10'
+                                : 'bg-slate-900 border border-slate-800'
+                            }`}
+                          >
+                            <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: aspMeta?.color || '#888' }} />
+                            <span style={{ color: pMeta?.color || '#fff' }}>{pMeta?.sym}</span>
+                            <span className="text-slate-200 font-medium">{hit.p}</span>
+                            <span style={{ color: aspMeta?.color || '#ccc' }}>{aspMeta?.abbr || hit.a}</span>
+                            <span className="text-slate-500 text-[10px]">({hit.o}°)</span>
 
-                          {showAstroSignals && sigMatch && (
-                            <span
-                              className="px-1.5 py-0.5 rounded text-[10px] font-extrabold ml-1 uppercase tracking-wider flex items-center gap-1 shadow"
-                              style={{
-                                backgroundColor: TIER_META[sigMatch.tier]?.bg || 'rgba(232, 199, 102, 0.2)',
-                                color: TIER_META[sigMatch.tier]?.color || '#e8c766',
-                                border: `1px solid ${TIER_META[sigMatch.tier]?.border || 'rgba(232, 199, 102, 0.5)'}`
-                              }}
-                              title={`${sigMatch.desc} (Lift: ${sigMatch.lift.toFixed(2)}x, p: ${sigMatch.p})`}
-                            >
-                              ⚡ 42-SIG: {TIER_META[sigMatch.tier]?.icon} {sigMatch.tier.toUpperCase()} {sigMatch.lift.toFixed(1)}× {sigMatch.direction}
-                            </span>
-                          )}
-                        </div>
-                      );
-                    })
-                  ) : (
-                    <span className="text-slate-500 italic text-[10px]">No planets at pressure at this wall level on {hoverAstroInfo.dateStr}</span>
-                  )}
+                            {showAstroSignals && sigMatch && (
+                              <span
+                                className="px-1.5 py-0.5 rounded text-[10px] font-extrabold ml-0.5 uppercase tracking-wider flex items-center gap-1 shadow-sm"
+                                style={{
+                                  backgroundColor: TIER_META[sigMatch.tier]?.bg || 'rgba(232, 199, 102, 0.2)',
+                                  color: TIER_META[sigMatch.tier]?.color || '#e8c766',
+                                  border: `1px solid ${TIER_META[sigMatch.tier]?.border || 'rgba(232, 199, 102, 0.5)'}`
+                                }}
+                                title={`${sigMatch.desc} (Lift: ${sigMatch.lift.toFixed(2)}x, p: ${sigMatch.p})`}
+                              >
+                                ⚡ 42-SIG: {TIER_META[sigMatch.tier]?.icon} {sigMatch.tier.toUpperCase()} {sigMatch.lift.toFixed(1)}× {sigMatch.direction}
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <span className="text-slate-500 italic text-[10px]">No planets at pressure at this wall level on {hoverAstroInfo.dateStr}</span>
+                    )}
+                  </div>
                 </div>
               </div>
 
@@ -2112,19 +2277,19 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
                   <span className="px-2 py-0.5 bg-amber-500/20 rounded border border-amber-500/40 text-amber-300 font-bold">
                     Harmonic Price: <strong className="text-amber-200">{hoverAstroInfo.dateHarmonics.pHarmExact.toLocaleString()}</strong> ({hoverAstroInfo.dateHarmonics.dateSpoke} + 36×{hoverAstroInfo.dateHarmonics.kMultiplier})
                   </span>
-                  <span className="px-2 py-0.5 bg-slate-950 rounded border border-slate-800 text-teal-300 font-medium">
+                  <span className="px-2 py-0.5 bg-slate-900 rounded border border-slate-800 text-teal-300 font-medium">
                     36-Ring Price: <strong className="text-slate-200">{hoverAstroInfo.dateHarmonics.pRingHarm.toLocaleString()}</strong> ([{hoverAstroInfo.dateHarmonics.dateSpoke} + 36×{hoverAstroInfo.dateHarmonics.kRingMultiplier}]×100)
                   </span>
-                  <span className="px-2 py-0.5 bg-slate-950 rounded border border-amber-500/30 text-amber-300 font-medium">
+                  <span className="px-2 py-0.5 bg-slate-900 rounded border border-amber-500/30 text-amber-300 font-medium">
                     90°: <strong className="text-slate-200">{hoverAstroInfo.dateHarmonics.ringH90[0].toLocaleString()}</strong> / <strong className="text-slate-200">{hoverAstroInfo.dateHarmonics.ringH90[1].toLocaleString()}</strong>
                   </span>
-                  <span className="px-2 py-0.5 bg-slate-950 rounded border border-amber-500/30 text-amber-300 font-medium">
+                  <span className="px-2 py-0.5 bg-slate-900 rounded border border-amber-500/30 text-amber-300 font-medium">
                     120°: <strong className="text-slate-200">{hoverAstroInfo.dateHarmonics.ringH120[0].toLocaleString()}</strong> / <strong className="text-slate-200">{hoverAstroInfo.dateHarmonics.ringH120[1].toLocaleString()}</strong>
                   </span>
-                  <span className="px-2 py-0.5 bg-slate-950 rounded border border-amber-500/30 text-amber-300 font-medium">
+                  <span className="px-2 py-0.5 bg-slate-900 rounded border border-amber-500/30 text-amber-300 font-medium">
                     180°: <strong className="text-slate-200">{hoverAstroInfo.dateHarmonics.ringH180[0].toLocaleString()}</strong> / <strong className="text-slate-200">{hoverAstroInfo.dateHarmonics.ringH180[1].toLocaleString()}</strong>
                   </span>
-                  <span className="px-2 py-0.5 bg-slate-950 rounded border border-slate-800 text-slate-400">
+                  <span className="px-2 py-0.5 bg-slate-900 rounded border border-slate-800 text-slate-400">
                     Adj: <span className="text-slate-300">{hoverAstroInfo.dateHarmonics.pHarmPrev.toLocaleString()}</span> / <span className="text-slate-300">{hoverAstroInfo.dateHarmonics.pHarmNext.toLocaleString()}</span>
                   </span>
                   {hoverAstroInfo.dateHarmonics.isHarmonicMatch && (
@@ -2135,70 +2300,66 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
                 </div>
               </div>
 
-              {/* Row 3: Closest Wall Harmonics (180°, 120°, 90°, 0°) */}
-              <div className="flex flex-wrap items-center gap-2 border-t border-slate-800/60 pt-2 text-[11px]">
-                <span className="text-amber-300 font-bold flex items-center gap-1 text-[10px] uppercase shrink-0">
-                  <Target className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Wall ({hoverAstroInfo.closestWallHarmonics.wallPrice.toLocaleString()}) Harmonics:</span>
-                </span>
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <span className="px-2 py-0.5 bg-amber-500/20 rounded border border-amber-500/40 font-mono text-amber-300 text-[10px] font-bold">
-                    0°: <strong className="text-amber-200">{hoverAstroInfo.closestWallHarmonics.h0.toLocaleString()}</strong>
-                  </span>
-                  <span className="px-2 py-0.5 bg-slate-950 rounded border border-slate-800 font-mono text-teal-300 text-[10px] font-medium">
-                    90°: <strong className="text-slate-200">{hoverAstroInfo.closestWallHarmonics.h90[0].toLocaleString()}</strong> / <strong className="text-slate-200">{hoverAstroInfo.closestWallHarmonics.h90[1].toLocaleString()}</strong>
-                  </span>
-                  <span className="px-2 py-0.5 bg-slate-950 rounded border border-slate-800 font-mono text-teal-300 text-[10px] font-medium">
-                    120°: <strong className="text-slate-200">{hoverAstroInfo.closestWallHarmonics.h120[0].toLocaleString()}</strong> / <strong className="text-slate-200">{hoverAstroInfo.closestWallHarmonics.h120[1].toLocaleString()}</strong>
-                  </span>
-                  <span className="px-2 py-0.5 bg-slate-950 rounded border border-slate-800 font-mono text-teal-300 text-[10px] font-medium">
-                    180°: <strong className="text-slate-200">{hoverAstroInfo.closestWallHarmonics.h180[0].toLocaleString()}</strong> / <strong className="text-slate-200">{hoverAstroInfo.closestWallHarmonics.h180[1].toLocaleString()}</strong>
-                  </span>
-                </div>
-              </div>
-
-              {/* Row 4: Date Boxing, Wall Syncs & Price Boxing Info */}
-              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-800/60 pt-2 text-[11px]">
-                {/* Date Boxing Match Indicator */}
+              {/* Row 3: Closest Wall Harmonics & Gann/Boxing Details */}
+              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-800/60 pt-2 text-[11px]">
+                {/* Wall Harmonics */}
                 <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-amber-300 font-bold flex items-center gap-1 text-[10px] uppercase">
-                    <CalendarDays className="w-3.5 h-3.5 text-amber-400" />
-                    <span>36-H Boxing Date:</span>
+                  <span className="text-amber-300 font-bold flex items-center gap-1 text-[10px] uppercase shrink-0">
+                    <Target className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Wall ({hoverAstroInfo.closestWallHarmonics.wallPrice.toLocaleString()}) Harmonics:</span>
                   </span>
-                  {hoverAstroInfo.matchedBoxingDate ? (
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="px-2 py-0.5 rounded bg-amber-400/20 text-amber-300 border border-amber-400/40 font-bold text-[10px] flex items-center gap-1">
-                        🥊 {hoverAstroInfo.matchedBoxingDate.kind.toUpperCase()} BOXING ({hoverAstroInfo.matchedBoxingDate.date})
-                        {hoverAstroInfo.matchedBoxingDate.snappedFrom && ` [snapped from ${hoverAstroInfo.matchedBoxingDate.snappedFrom}]`}
-                      </span>
-                      {hoverAstroInfo.candleWallMatches && hoverAstroInfo.candleWallMatches.length > 0 && (
-                        <span className="px-2 py-0.5 rounded bg-amber-400 text-slate-950 font-extrabold text-[10px] flex items-center gap-1 shadow">
-                          ⭐ SPECIAL DAY ({hoverAstroInfo.candleWallMatches.map((wm) => `${wm.matchedPrice.toLocaleString()} ${wm.angleLabel || '0°'}`).join(', ')})
-                        </span>
-                      )}
-                    </div>
-                  ) : hoverAstroInfo.nextBoxingDate ? (
-                    <span className="text-slate-400 text-[10px]">
-                      Next Boxing: <strong className="text-amber-300">{hoverAstroInfo.nextBoxingDate.date}</strong> ({hoverAstroInfo.nextBoxingDate.kind})
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="px-2 py-0.5 bg-amber-500/20 rounded border border-amber-500/40 font-mono text-amber-300 text-[10px] font-bold">
+                      0°: <strong className="text-amber-200">{hoverAstroInfo.closestWallHarmonics.h0.toLocaleString()}</strong>
                     </span>
-                  ) : (
-                    <span className="text-slate-500 text-[10px]">No active 36-H date</span>
-                  )}
+                    <span className="px-2 py-0.5 bg-slate-900 rounded border border-slate-800 font-mono text-teal-300 text-[10px] font-medium">
+                      90°: <strong className="text-slate-200">{hoverAstroInfo.closestWallHarmonics.h90[0].toLocaleString()}</strong> / <strong className="text-slate-200">{hoverAstroInfo.closestWallHarmonics.h90[1].toLocaleString()}</strong>
+                    </span>
+                    <span className="px-2 py-0.5 bg-slate-900 rounded border border-slate-800 font-mono text-teal-300 text-[10px] font-medium">
+                      120°: <strong className="text-slate-200">{hoverAstroInfo.closestWallHarmonics.h120[0].toLocaleString()}</strong> / <strong className="text-slate-200">{hoverAstroInfo.closestWallHarmonics.h120[1].toLocaleString()}</strong>
+                    </span>
+                    <span className="px-2 py-0.5 bg-slate-900 rounded border border-slate-800 font-mono text-teal-300 text-[10px] font-medium">
+                      180°: <strong className="text-slate-200">{hoverAstroInfo.closestWallHarmonics.h180[0].toLocaleString()}</strong> / <strong className="text-slate-200">{hoverAstroInfo.closestWallHarmonics.h180[1].toLocaleString()}</strong>
+                    </span>
+                  </div>
                 </div>
 
-                {/* Price Boxing / Gann Channel Indicator */}
-                <div className="flex items-center gap-2">
-                  <span className="text-teal-300 font-bold flex items-center gap-1 text-[10px] uppercase">
+                {/* Boxing Date & Gann Channel Details */}
+                <div className="flex items-center gap-3 flex-wrap">
+                  {/* Date Boxing Match */}
+                  <div className="flex items-center gap-1.5">
+                    <CalendarDays className="w-3.5 h-3.5 text-amber-400" />
+                    {hoverAstroInfo.matchedBoxingDate ? (
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="px-2 py-0.5 rounded bg-amber-400/20 text-amber-300 border border-amber-400/40 font-bold text-[10px] flex items-center gap-1">
+                          🥊 {hoverAstroInfo.matchedBoxingDate.kind.toUpperCase()} BOXING ({hoverAstroInfo.matchedBoxingDate.date})
+                        </span>
+                        {hoverAstroInfo.candleWallMatches && hoverAstroInfo.candleWallMatches.length > 0 && (
+                          <span className="px-2 py-0.5 rounded bg-amber-400 text-slate-950 font-extrabold text-[10px] flex items-center gap-1 shadow">
+                            ⭐ SPECIAL DAY ({hoverAstroInfo.candleWallMatches.map((wm) => `${wm.matchedPrice.toLocaleString()} ${wm.angleLabel || '0°'}`).join(', ')})
+                          </span>
+                        )}
+                      </div>
+                    ) : hoverAstroInfo.nextBoxingDate ? (
+                      <span className="text-slate-400 text-[10px]">
+                        Next Boxing: <strong className="text-amber-300">{hoverAstroInfo.nextBoxingDate.date}</strong> ({hoverAstroInfo.nextBoxingDate.kind})
+                      </span>
+                    ) : (
+                      <span className="text-slate-500 text-[10px]">No active 36-H date</span>
+                    )}
+                  </div>
+
+                  {/* Price Boxing / Gann Channel */}
+                  <div className="flex items-center gap-1.5">
                     <Box className="w-3.5 h-3.5 text-teal-400" />
-                    <span>Gann Channel:</span>
-                  </span>
-                  {hoverAstroInfo.priceBoxingDetails ? (
-                    <span className="px-2 py-0.5 rounded bg-teal-500/20 text-teal-300 border border-teal-500/40 font-semibold text-[10px]">
-                      Box #{hoverAstroInfo.priceBoxingDetails.boxId + 1}: {hoverAstroInfo.priceBoxingDetails.floorPrice.toLocaleString()} ─ {hoverAstroInfo.priceBoxingDetails.ceilPrice.toLocaleString()} ({hoverAstroInfo.priceBoxingDetails.boxWidth} pts) [{hoverAstroInfo.priceBoxingDetails.boxPct.toFixed(0)}%]
-                    </span>
-                  ) : (
-                    <span className="text-slate-500 text-[10px]">Outside active Gann boxes</span>
-                  )}
+                    {hoverAstroInfo.priceBoxingDetails ? (
+                      <span className="px-2 py-0.5 rounded bg-teal-500/20 text-teal-300 border border-teal-500/40 font-semibold text-[10px]">
+                        Box #{hoverAstroInfo.priceBoxingDetails.boxId + 1}: {hoverAstroInfo.priceBoxingDetails.floorPrice.toLocaleString()} ─ {hoverAstroInfo.priceBoxingDetails.ceilPrice.toLocaleString()} ({hoverAstroInfo.priceBoxingDetails.boxWidth} pts) [{hoverAstroInfo.priceBoxingDetails.boxPct.toFixed(0)}%]
+                      </span>
+                    ) : (
+                      <span className="text-slate-500 text-[10px]">Outside active Gann boxes</span>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>

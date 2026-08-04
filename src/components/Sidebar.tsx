@@ -27,8 +27,6 @@ interface SidebarProps {
   onToggleCollapse: () => void;
   activeTab: TabType;
   onTabChange: (tab: TabType) => void;
-  boxesBadgeCount: number;
-  datesBadgeCount?: number;
   activePresetName: string;
   onSelectPreset: (preset: MarketPreset) => void;
   onOpenSignalsModal: () => void;
@@ -69,7 +67,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onToggleCollapse,
   activeTab,
   onTabChange,
-  boxesBadgeCount,
   activePresetName,
   onSelectPreset,
   onOpenSignalsModal,
@@ -90,10 +87,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [controlsExpanded, setControlsExpanded] = useState(true);
   const [advExpanded, setAdvExpanded] = useState(false);
 
-  const TABS: { id: TabType; label: string; icon: React.FC<{ className?: string }>; badge?: number }[] = [
+  const TABS: { id: TabType; label: string; icon: React.FC<{ className?: string }> }[] = [
     { id: 'terminal', label: 'Trading Terminal', icon: CandlestickChart },
     { id: 'boxingdates', label: 'Boxing Dates', icon: CalendarRange },
-    { id: 'boxes', label: 'Box Breakouts', icon: Box, badge: boxesBadgeCount },
+    { id: 'boxes', label: 'Box Breakouts', icon: Box },
     { id: 'matrix', label: 'Matrix Grid', icon: Grid3X3 },
     { id: 'overview', label: 'Overview', icon: LayoutDashboard },
     { id: 'intraday', label: 'Intraday Levels', icon: Target }
@@ -162,11 +159,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 }`}
               >
                 <Icon className="w-5 h-5" />
-                {tab.badge !== undefined && tab.badge > 0 && (
-                  <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-rose-500 text-white text-[9px] font-bold flex items-center justify-center border border-slate-950">
-                    {tab.badge}
-                  </span>
-                )}
                 {/* Tooltip on hover */}
                 <div className="absolute left-full ml-3 px-2.5 py-1 bg-slate-900 text-slate-200 font-mono text-xs rounded-md shadow-xl border border-slate-700 whitespace-nowrap opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity z-50">
                   {tab.label}
@@ -234,17 +226,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       <Icon className={`w-4 h-4 ${isActive ? 'text-slate-950' : 'text-amber-400/80'}`} />
                       <span>{tab.label}</span>
                     </div>
-                    {tab.badge !== undefined && tab.badge > 0 && (
-                      <span
-                        className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
-                          isActive
-                            ? 'bg-slate-950 text-amber-300'
-                            : 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
-                        }`}
-                      >
-                        {tab.badge}
-                      </span>
-                    )}
                   </button>
                 );
               })}

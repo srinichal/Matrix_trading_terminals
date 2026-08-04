@@ -9,6 +9,7 @@ import {
   PLANET_META, FAST_BODIES, ASPECT_META
 } from './astronomy';
 import { getSignal, getAllSignals } from './signals';
+import { NIFTY_SWINGS } from '../data/niftySwings';
 
 export const P_START = 36;
 export const P_SCALE = 10;
@@ -720,6 +721,65 @@ export function computeBoxingDates(
   result.sort((a, b) => a.date.localeCompare(b.date));
 
   return result;
+}
+
+export function computeRawBoxingDates(
+  dateFrom: string,
+  dateTo: string,
+  permWalls: number[],
+  _strongWalls: number[] = [],
+  userSwings: SwingPivot[] = [],
+  snapTradingDay: boolean = true
+): BoxingDate[] {
+  // Only use Perm Walls for 36-H Matrix Wall Boxing Dates to omit noisy strong wall dates
+  const wallDates = computeBoxingDates(dateFrom, dateTo, permWalls, [], snapTradingDay);
+
+  const map = new Map<string, SwingPivot>();
+  for (const s of NIFTY_SWINGS) map.set(s.date, s);
+  for (const s of userSwings) map.set(s.date, s);
+  const sortedSwings = Array.from(map.values()).sort((a, b) => a.date.localeCompare(b.date));
+
+  const multiAnchorDates = computeMultiAnchorDates(sortedSwings, dateFrom, dateTo, 18, snapTradingDay);
+
+  const mergedMap = new Map<string, BoxingDate>();
+
+  for (const wd of wallDates) {
+    mergedMap.set(wd.date, { ...wd });
+  }
+
+  for (const mad of multiAnchorDates) {
+    const existing = mergedMap.get(mad.date);
+    if (existing) {
+      existing.swingConfluence = {
+        isConfluence: mad.isConfluence,
+        anchors: mad.anchors,
+        spokeCount: mad.spokeCount,
+        highAnchors: mad.highAnchors,
+        lowAnchors: mad.lowAnchors
+      };
+      existing.kind = 'perm';
+    } else {
+      mergedMap.set(mad.date, {
+        date: mad.date,
+        kind: 'perm',
+        perm: [],
+        strong: [],
+        wallSyncs: [],
+        syncPrices: [],
+        isWeekend: mad.isWeekend,
+        snappedFrom: mad.snappedDate,
+        swingConfluence: {
+          isConfluence: mad.isConfluence,
+          anchors: mad.anchors,
+          spokeCount: mad.spokeCount,
+          highAnchors: mad.highAnchors,
+          lowAnchors: mad.lowAnchors
+        }
+      });
+    }
+  }
+
+  return Array.from(mergedMap.values()).sort((a, b) => a.date.localeCompare(b.date));
 }
 
 export function selectDiverseSwingAnchors(

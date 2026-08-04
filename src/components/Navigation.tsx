@@ -6,19 +6,17 @@ export type TabType = 'overview' | 'matrix' | 'boxes' | 'boxingdates' | 'intrada
 interface NavigationProps {
   activeTab: TabType;
   onTabChange: (tab: TabType) => void;
-  boxesBadgeCount: number;
 }
 
 export const Navigation: React.FC<NavigationProps> = ({
   activeTab,
-  onTabChange,
-  boxesBadgeCount
+  onTabChange
 }) => {
-  const TABS: { id: TabType; label: string; icon: React.FC<{ className?: string }>; badge?: number }[] = [
+  const TABS: { id: TabType; label: string; icon: React.FC<{ className?: string }> }[] = [
     { id: 'overview', label: 'Overview', icon: LayoutDashboard },
     { id: 'terminal', label: 'Trading Terminal', icon: CandlestickChart },
     { id: 'matrix', label: 'Matrix', icon: Grid3X3 },
-    { id: 'boxes', label: 'Box Breakouts', icon: Box, badge: boxesBadgeCount },
+    { id: 'boxes', label: 'Box Breakouts', icon: Box },
     { id: 'boxingdates', label: 'Boxing Dates', icon: CalendarRange },
     { id: 'intraday', label: 'Intraday Levels', icon: Target }
   ];
@@ -41,17 +39,6 @@ export const Navigation: React.FC<NavigationProps> = ({
           >
             <Icon className={`w-3.5 h-3.5 ${isActive ? 'text-slate-950' : 'text-slate-400'}`} />
             {tab.label}
-            {tab.badge !== undefined && tab.badge > 0 && (
-              <span
-                className={`ml-1 px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
-                  isActive
-                    ? 'bg-slate-950 text-amber-300'
-                    : 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
-                }`}
-              >
-                {tab.badge}
-              </span>
-            )}
           </button>
         );
       })}
