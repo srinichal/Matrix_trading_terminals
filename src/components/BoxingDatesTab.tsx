@@ -117,8 +117,8 @@ export const BoxingDatesTab: React.FC<BoxingDatesTabProps> = ({
   );
 
   const diverseAnchors = useMemo(
-    () => selectDiverseSwingAnchors(allSwings, dateFrom, 18),
-    [allSwings, dateFrom]
+    () => selectDiverseSwingAnchors(allSwings, dateTo, 18),
+    [allSwings, dateTo]
   );
 
   // ── Filters ───────────────────────────────────────────────────────
