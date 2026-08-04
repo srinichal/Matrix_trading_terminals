@@ -47,11 +47,26 @@ import {
   Grid3X3
 } from 'lucide-react';
 import { MatrixData, DepartureEvent, PlanetName, AspectName, BoxWallMatch, SwingPivot, BoxingDate } from '../types';
-import { scanCriticalDates, computeBoxingDates, computeMultiAnchorDates, computeBoxBreakouts, ringToDegree, fromIso, checkCandleWallMatch } from '../lib/matrix';
+import { scanCriticalDates, computeBoxingDates, computeMultiAnchorDates, computeBoxBreakouts, ringToDegree, fromIso, checkCandleWallMatch, computeSyncPricesForWall, SYNC_RING_OFFSETS } from '../lib/matrix';
 import { NIFTY_SWINGS } from '../data/niftySwings';
-import { PLANET_META, ASPECT_META, BODY_LIST, getPositions, findAspectAll } from '../lib/astronomy';
+import { PLANET_META, ASPECT_META, BODY_LIST, getPositions, findAspectAll, daysSinceEpoch, sunGeocentric } from '../lib/astronomy';
 import { getSignal, TIER_META } from '../lib/signals';
 import { MatrixWallsModal } from './MatrixWallsModal';
+
+function find42SignalMatch(planet: PlanetName, aspect: AspectName) {
+  const actions = ['depart', 'arrive'] as const;
+  const boundaries = ['floor', 'ceiling'] as const;
+  let best: ReturnType<typeof getSignal> = null;
+  for (const act of actions) {
+    for (const bnd of boundaries) {
+      const sig = getSignal(planet, aspect, act, bnd);
+      if (sig && (!best || sig.lift > best.lift)) {
+        best = sig;
+      }
+    }
+  }
+  return best;
+}
 
 interface TradingTerminalTabProps {
   matrix: MatrixData;
@@ -540,8 +555,10 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
 
   // 36-Harmonic Boxing Dates Calculation
   const rawBoxingDates = useMemo(() => {
+    // 1. Compute 36-H Matrix Wall Boxing Dates (gives exact projected walls per date)
     const wallDates = computeBoxingDates(dateFrom, dateTo, permWalls, strongWalls, true);
 
+    // 2. Compute Swing Anchor Confluence Dates
     const map = new Map<string, SwingPivot>();
     for (const s of NIFTY_SWINGS) map.set(s.date, s);
     for (const s of userSwings) map.set(s.date, s);
@@ -570,8 +587,8 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
         mergedMap.set(mad.date, {
           date: mad.date,
           kind: mad.isConfluence ? 'perm' : 'strong',
-          perm: permWalls,
-          strong: strongWalls,
+          perm: [],
+          strong: [],
           wallSyncs: [],
           syncPrices: [],
           isWeekend: mad.isWeekend,
@@ -752,17 +769,115 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
       }
     }
 
+    // 5. Compute Harmonics / Sync Targets for this date or closest wall
+    let syncTargets: Array<{ price: number; label: string; angleLabel: string }> = [];
+
+    if (matchedBoxingDate && matchedBoxingDate.syncPrices && matchedBoxingDate.syncPrices.length > 0) {
+      syncTargets = matchedBoxingDate.syncPrices.map((sp) => {
+        let angleLabel = 'Sync';
+        if (matchedBoxingDate.wallSyncs) {
+          for (const ws of matchedBoxingDate.wallSyncs) {
+            if (ws.syncPrices.includes(sp)) {
+              const offset = Math.round((sp - ws.wallPrice) / 100);
+              const angleDeg = offset * 10;
+              angleLabel = offset === 0 ? '0°' : (offset > 0 ? `+${angleDeg}°` : `${angleDeg}°`);
+              break;
+            }
+          }
+        }
+        return { price: sp, label: 'Sync Target', angleLabel };
+      });
+    } else if (closestWall && closestWall.price > 0) {
+      const wallSync = computeSyncPricesForWall(closestWall.price, 'perm');
+      syncTargets = wallSync.syncPrices.map((sp, idx) => {
+        const offsetItem = SYNC_RING_OFFSETS[idx];
+        return {
+          price: sp,
+          label: offsetItem ? offsetItem.label : 'Harmonic Sync',
+          angleLabel: offsetItem ? offsetItem.abbr : '0°'
+        };
+      });
+    }
+
+    const wallP = closestWall.price;
+    const closestWallHarmonics = {
+      wallPrice: wallP,
+      type: closestWall.type,
+      h0: wallP,
+      h90: [wallP - 900, wallP + 900],
+      h120: [wallP - 1200, wallP + 1200],
+      h180: [wallP - 1800, wallP + 1800]
+    };
+
+    // Date Wheel Spoke S & 36-Harmonic Price Arithmetic (S + 36 * k)
+    let dateSpoke = 0;
+    let dateDegree = 0;
+
+    if (matchedBoxingDate?.swingConfluence?.anchors?.[0]?.spoke !== undefined) {
+      dateSpoke = matchedBoxingDate.swingConfluence.anchors[0].spoke;
+      dateDegree = dateSpoke * 10;
+    } else if (matchedBoxingDate && (matchedBoxingDate.perm.length > 0 || matchedBoxingDate.strong.length > 0)) {
+      const w = matchedBoxingDate.perm[0] || matchedBoxingDate.strong[0];
+      const r = Math.floor(w / 100);
+      dateSpoke = ((r % 36) + 36) % 36;
+      dateDegree = dateSpoke * 10;
+    } else {
+      const dateObj = fromIso(dateStr);
+      const dDays = daysSinceEpoch(dateObj);
+      const sunObj = sunGeocentric(dDays);
+      dateDegree = Math.round(sunObj.lon) % 360;
+      dateSpoke = Math.round(sunObj.lon / 10) % 36;
+    }
+
+    const mktPrice = hoverPrice || displayCandle?.close || 24000;
+    const k = Math.round((mktPrice - dateSpoke) / 36);
+    const pHarmExact = dateSpoke + 36 * k;
+    const pHarmPrev = dateSpoke + 36 * (k - 1);
+    const pHarmNext = dateSpoke + 36 * (k + 1);
+
+    const kRing = Math.round((Math.floor(mktPrice / 100) - dateSpoke) / 36);
+    const pRingHarm = (dateSpoke + 36 * kRing) * 100;
+
+    const isExactHarmonicHit = Boolean(displayCandle && (
+      (displayCandle.low <= pHarmExact && displayCandle.high >= pHarmExact) ||
+      Math.abs(displayCandle.close - pHarmExact) / pHarmExact <= 0.0025
+    ));
+
+    const isRingHarmonicHit = Boolean(displayCandle && (
+      (displayCandle.low <= pRingHarm && displayCandle.high >= pRingHarm) ||
+      Math.abs(displayCandle.close - pRingHarm) / pRingHarm <= 0.0025
+    ));
+
+    const isHarmonicMatch = isExactHarmonicHit || isRingHarmonicHit;
+
+    const dateHarmonics = {
+      dateSpoke,
+      dateDegree,
+      kMultiplier: k,
+      pHarmExact,
+      pHarmPrev,
+      pHarmNext,
+      kRingMultiplier: kRing,
+      pRingHarm,
+      isHarmonicMatch,
+      isExactHarmonicHit,
+      isRingHarmonicHit
+    };
+
     return {
       dateStr,
       hoverPrice,
       closestWall,
+      closestWallHarmonics,
+      dateHarmonics,
       wallAspectHits,
       matrixRingCount,
       matrixHitCount,
       matchedBoxingDate,
       nextBoxingDate,
       priceBoxingDetails,
-      candleWallMatches
+      candleWallMatches,
+      syncTargets
     };
   }, [displayCandle, matrix, permWalls, strongWalls, orb, rawBoxingDates, gannBoxes]);
 
@@ -885,97 +1000,81 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
       let lastX = -999;
       let lastYLevel = 0;
 
+      // Group filteredBoxingDates by date to ensure at most 1 merged badge per day
+      const dateMap = new Map<string, BoxingDate[]>();
       filteredBoxingDates.forEach((bd) => {
-        const x = findXCoordinateForDate(bd.date) ?? (bd.snappedFrom ? findXCoordinateForDate(bd.snappedFrom) : null);
+        const list = dateMap.get(bd.date) || [];
+        list.push(bd);
+        dateMap.set(bd.date, list);
+      });
+
+      dateMap.forEach((bdList, dateStr) => {
+        const x = findXCoordinateForDate(dateStr) ?? (bdList[0].snappedFrom ? findXCoordinateForDate(bdList[0].snappedFrom) : null);
         if (x !== null && x >= -30 && x <= width + 30) {
-          const isPerm = bd.kind === 'perm';
-          const dowStr = getDowStr(bd.date);
+          const isPerm = bdList.some((b) => b.kind === 'perm');
+          const dowStr = getDowStr(dateStr);
 
-          // Find if there is an evaluated visible candle on this date
-          const candleOnDate = candlesRef.current.find((c) => c.timeStr.slice(0, 10) === bd.date);
-          const wallMatches = candleOnDate ? checkCandleWallMatch(candleOnDate, bd) : [];
-          const hasWallMatch = wallMatches.length > 0;
-          const isFuture = !candleOnDate;
+          // Check if any candle on this 36-H boxing date hits a price-date wall match
+          const candlesOnDate = candlesRef.current.filter((c) => {
+            const cDate = c.timeStr ? c.timeStr.slice(0, 10) : '';
+            return cDate === dateStr || (bdList[0]?.snappedFrom && cDate === bdList[0].snappedFrom);
+          });
+          const allWallMatches = bdList.flatMap((b) => candlesOnDate.flatMap((c) => checkCandleWallMatch(c, b)));
+          const hasWallMatch = allWallMatches.length > 0;
 
-          // Build multi-line badge content for square-ish proportion
           let color = isPerm ? '#f59e0b' : '#14b8a6';
-          const lines: string[] = [];
+          let tagText = isPerm ? `🥊 PERM ${dateStr.slice(5)} (${dowStr})` : `📅 BOXING ${dateStr.slice(5)} (${dowStr})`;
+
           if (hasWallMatch) {
             color = '#f59e0b';
-            const matchSummary = wallMatches.map((m) => m.matchedPrice.toLocaleString()).join(', ');
-            lines.push('⭐ SPECIAL DAY');
-            lines.push(`${bd.date.slice(5)} (${dowStr})`);
-            lines.push(`MATCH ${matchSummary}`);
-          } else if (isFuture) {
-            color = isPerm ? '#e0a96d' : '#38bdf8';
-            lines.push(isPerm ? '🥊 PERM' : '📅 BOX');
-            lines.push(`${bd.date.slice(5)} (${dowStr})`);
-            lines.push('FUTURE');
-          } else {
-            lines.push(isPerm ? '🥊 PERM' : '📅 BOX');
-            lines.push(`${bd.date.slice(5)} (${dowStr})`);
+            tagText = `⭐ SPECIAL ${dateStr.slice(5)} (${dowStr})`;
           }
 
           ctx.save();
           ctx.font = 'bold 10px Inter, system-ui, sans-serif';
 
-          let maxLineWidth = 0;
-          lines.forEach((l) => {
-            const w = ctx.measureText(l).width;
-            if (w > maxLineWidth) maxLineWidth = w;
-          });
-
-          const badgeWidth = Math.max(58, maxLineWidth + 12);
-          const lineGap = 12;
-          const badgeHeight = lines.length * lineGap + 8;
+          const textWidth = ctx.measureText(tagText).width;
+          const badgeWidth = textWidth + 12;
+          const badgeHeight = 18;
 
           // Stagger top badge level if close to previous date
           let yLevel = 0;
-          if (Math.abs(x - lastX) < badgeWidth + 12) {
+          if (Math.abs(x - lastX) < badgeWidth + 8) {
             yLevel = (lastYLevel + 1) % 2;
           }
           lastX = x;
           lastYLevel = yLevel;
 
-          const topY = 6 + yLevel * 42;
+          const topY = 6 + yLevel * 22;
 
           // Draw full-height vertical line starting below the badge
           ctx.beginPath();
           ctx.setLineDash(hasWallMatch ? [3, 2] : isPerm ? [6, 4] : [3, 3]);
-          ctx.strokeStyle = color;
-          ctx.globalAlpha = hasWallMatch ? 1.0 : isPerm ? 0.8 : 0.65;
+          ctx.strokeStyle = hasWallMatch ? '#fbbf24' : color;
+          ctx.globalAlpha = hasWallMatch ? 1.0 : isPerm ? 0.85 : 0.65;
           ctx.lineWidth = hasWallMatch ? 2.0 : isPerm ? 1.5 : 1.2;
           ctx.moveTo(x, topY + badgeHeight);
           ctx.lineTo(x, height - 26);
           ctx.stroke();
 
-          // Draw compact square badge box
+          // Draw compact 1-line pill tag box
           const badgeX = Math.max(badgeWidth / 2 + 4, Math.min(width - badgeWidth / 2 - 4, x));
 
           // Badge Background box
           ctx.fillStyle = hasWallMatch ? '#451a03' : '#0f172a';
-          ctx.strokeStyle = color;
+          ctx.strokeStyle = hasWallMatch ? '#fbbf24' : color;
           ctx.lineWidth = hasWallMatch ? 1.5 : 1;
           ctx.globalAlpha = 0.95;
           ctx.beginPath();
-          ctx.roundRect(badgeX - badgeWidth / 2, topY, badgeWidth, badgeHeight, 5);
+          ctx.roundRect(badgeX - badgeWidth / 2, topY, badgeWidth, badgeHeight, 4);
           ctx.fill();
           ctx.stroke();
 
-          // Render multi-line text inside badge
+          // Render 1-line text inside badge
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
-          lines.forEach((line, idx) => {
-            const lineY = topY + 4 + idx * lineGap + lineGap / 2;
-            if (hasWallMatch) {
-              ctx.fillStyle = idx === 0 ? '#fbbf24' : '#fef08a';
-            } else if (isFuture) {
-              ctx.fillStyle = idx === 2 ? '#94a3b8' : color;
-            } else {
-              ctx.fillStyle = color;
-            }
-            ctx.fillText(line, badgeX, lineY);
-          });
+          ctx.fillStyle = hasWallMatch ? '#fbbf24' : color;
+          ctx.fillText(tagText, badgeX, topY + badgeHeight / 2);
 
           ctx.restore();
         }
@@ -1336,11 +1435,10 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
       });
     }
 
-    // Set or Clear Astro Signal & Boxing Date Markers on Candlestick Chart
-    const hasAstroMarkers = showAstroSignals && filteredAstroEvents.length > 0;
+    // Set or Clear Boxing Date Markers on Candlestick Chart (Astro markers removed from chart per request)
     const hasBoxingMarkers = showBoxingDates && filteredBoxingDates.length > 0;
 
-    if ((hasAstroMarkers || hasBoxingMarkers) && candles.length > 0) {
+    if (hasBoxingMarkers && candles.length > 0) {
       const dateToTimestamp = new Map<string, Time>();
 
       candles.forEach((c) => {
@@ -1358,85 +1456,27 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
 
       const timeToMarker = new Map<Time, SeriesMarker<Time>>();
 
-      if (hasAstroMarkers) {
-        filteredAstroEvents.forEach((ev) => {
-          const matchTime = dateToTimestamp.get(ev.date);
-          if (matchTime && !timeToMarker.has(matchTime)) {
-            const isGold = ev.sig?.tier === 'gold';
-            const isSilver = ev.sig?.tier === 'silver';
-            const tierLabel = isGold ? 'GOLD' : isSilver ? 'SLV' : 'BRZ';
-            const isUp = ev.sig?.direction === 'UP';
-            const shape = isUp ? 'arrowUp' : 'arrowDown';
-            const position = isUp ? 'belowBar' : 'aboveBar';
-            const color = isGold ? '#a855f7' : isSilver ? '#06b6d4' : '#f59e0b';
+      // Group boxing dates by matchTime to merge into 1 clean label per day
+      const timeToBoxingList = new Map<Time, BoxingDate[]>();
+      filteredBoxingDates.forEach((bd) => {
+        const matchTime = dateToTimestamp.get(bd.date);
+        if (matchTime) {
+          const list = timeToBoxingList.get(matchTime) || [];
+          list.push(bd);
+          timeToBoxingList.set(matchTime, list);
+        }
+      });
 
-            timeToMarker.set(matchTime, {
-              time: matchTime,
-              position: position,
-              color: color,
-              shape: shape,
-              text: `${tierLabel} ${ev.price} (${ev.body})`
-            });
-          }
+      timeToBoxingList.forEach((bdList, matchTime) => {
+        const isPerm = bdList.some((b) => b.kind === 'perm');
+        timeToMarker.set(matchTime, {
+          time: matchTime,
+          position: isPerm ? 'aboveBar' : 'belowBar',
+          color: isPerm ? '#f59e0b' : '#14b8a6',
+          shape: isPerm ? 'square' : 'circle',
+          text: ''
         });
-      }
-
-      if (hasBoxingMarkers) {
-        filteredBoxingDates.forEach((bd) => {
-          const matchTime = dateToTimestamp.get(bd.date);
-          if (matchTime) {
-            const candleOnDate = candles.find((c) => c.time === matchTime);
-            const wallMatches = candleOnDate ? checkCandleWallMatch(candleOnDate, bd) : [];
-            const hasWallMatch = wallMatches.length > 0;
-
-            const existing = timeToMarker.get(matchTime);
-            const isPerm = bd.kind === 'perm';
-
-            if (hasWallMatch) {
-              const matchedPriceStr = wallMatches.map((m) => `${m.matchedPrice.toLocaleString()} (${m.angleLabel || '0°'})`).join(', ');
-              const boxLabel = `⭐ MATCH [${matchedPriceStr}]`;
-              const boxColor = '#f59e0b'; // Gold highlight
-
-              if (existing) {
-                timeToMarker.set(matchTime, {
-                  ...existing,
-                  color: '#f59e0b',
-                  shape: 'square',
-                  text: `⭐ ${existing.text} | MATCH ${matchedPriceStr}`
-                });
-              } else {
-                timeToMarker.set(matchTime, {
-                  time: matchTime,
-                  position: 'aboveBar',
-                  color: boxColor,
-                  shape: 'square',
-                  text: boxLabel
-                });
-              }
-            } else {
-              const firstWall = isPerm ? (bd.perm[0] ?? bd.strong[0]) : (bd.strong[0] ?? bd.perm[0]);
-              const wallStr = firstWall ? `@ ${firstWall.toLocaleString()}` : '';
-              const boxLabel = `🥊 BOX ${isPerm ? 'PERM' : 'STR'}${wallStr ? ` ${wallStr}` : ''}`;
-              const boxColor = isPerm ? '#f59e0b' : '#14b8a6';
-
-              if (existing) {
-                timeToMarker.set(matchTime, {
-                  ...existing,
-                  text: `${existing.text} | ${boxLabel} (${bd.date.slice(5)})`
-                });
-              } else {
-                timeToMarker.set(matchTime, {
-                  time: matchTime,
-                  position: isPerm ? 'aboveBar' : 'belowBar',
-                  color: boxColor,
-                  shape: isPerm ? 'square' : 'circle',
-                  text: `${boxLabel} (${bd.date.slice(5)})`
-                });
-              }
-            }
-          }
-        });
-      }
+      });
 
       const sortedMarkers = Array.from(timeToMarker.values()).sort((a, b) => (a.time as number) - (b.time as number));
 
@@ -1555,10 +1595,11 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
   return (
     <div className={isPopout ? "fixed inset-0 z-50 bg-[#070a14] p-2 sm:p-3 overflow-y-auto flex flex-col h-screen space-y-2 shadow-2xl animate-in fade-in duration-200" : "flex-1 flex flex-col h-full min-h-0 space-y-2 overflow-hidden"}>
       {/* Top Controls Bar */}
-      <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-2 sm:p-2.5 shadow-xl backdrop-blur-md shrink-0">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          {/* Zerodha Data Source Indicator & Config Button */}
-          <div className="flex items-center gap-2">
+      <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-2.5 shadow-xl backdrop-blur-md shrink-0 space-y-2">
+        {/* Row 1: Connection & Timeframe & Chart View Controls */}
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800/80 pb-2">
+          {/* Group 1: Data Source & Live Sync Controls */}
+          <div className="flex items-center gap-1.5 flex-wrap">
             <div className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-400 text-slate-950 rounded-md font-mono text-xs font-bold shadow-md shadow-amber-400/20">
               <Key className="w-3.5 h-3.5" />
               <span>Zerodha Kite</span>
@@ -1625,7 +1666,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
             </button>
           </div>
 
-          {/* Timeframe Selector */}
+          {/* Group 2: Timeframe Selector */}
           <div className="flex items-center gap-1 bg-slate-950/80 p-1 rounded-lg border border-slate-800">
             <span className="text-[10px] font-mono text-slate-400 px-2 uppercase tracking-wider flex items-center gap-1">
               <Clock className="w-3 h-3 text-amber-400" /> TF:
@@ -1645,7 +1686,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
             ))}
           </div>
 
-          {/* Zoom & Popout Fullscreen Controls */}
+          {/* Group 3: Zoom & Popout Controls */}
           <div className="flex items-center gap-1.5 bg-slate-950/80 p-1 rounded-lg border border-slate-800">
             <button
               onClick={handleZoomIn}
@@ -1691,12 +1732,15 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
               )}
             </button>
           </div>
+        </div>
 
-          {/* Overlays Toggle */}
-          <div className="flex items-center gap-2">
+        {/* Row 2: Overlays Toggles & Reload Actions Bar */}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          {/* Overlays Toggles */}
+          <div className="flex items-center gap-2 flex-wrap">
             <button
               onClick={() => setShowPermWalls(!showPermWalls)}
-              className={`flex items-center gap-1.5 px-2.5 py-1.2 rounded-lg font-mono text-[11px] font-semibold border transition-all ${
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg font-mono text-[11px] font-semibold border transition-all ${
                 showPermWalls
                   ? 'bg-amber-500/15 text-amber-300 border-amber-500/40'
                   : 'bg-slate-950 text-slate-500 border-slate-800'
@@ -1708,7 +1752,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
 
             <button
               onClick={() => setShowStrongWalls(!showStrongWalls)}
-              className={`flex items-center gap-1.5 px-2.5 py-1.2 rounded-lg font-mono text-[11px] font-semibold border transition-all ${
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg font-mono text-[11px] font-semibold border transition-all ${
                 showStrongWalls
                   ? 'bg-slate-700/30 text-slate-200 border-slate-600/40'
                   : 'bg-slate-950 text-slate-500 border-slate-800'
@@ -1725,48 +1769,45 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
                   ? 'bg-purple-500/15 text-purple-300 border-purple-500/40'
                   : 'bg-slate-950 text-slate-500 border-slate-800'
               }`}
+              title="Highlight 42-Signal matches in hover tooltip"
             >
               <Sparkles className="w-3 h-3 text-purple-400" />
-              Astro Signals ({filteredAstroEvents.length})
+              42-Signals (Tooltip)
             </button>
 
-            {/* Boxing Dates Filter (Primary Date Overlay Filter) */}
+            {/* Unified Single Boxing Dates Filter Dropdown */}
             <div className="flex items-center gap-1.5 bg-slate-950 p-1 rounded-lg border border-slate-800">
-              <button
-                onClick={() => setShowBoxingDates(!showBoxingDates)}
-                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md font-mono text-[11px] font-semibold border transition-all ${
-                  showBoxingDates
-                    ? 'bg-amber-400/20 text-amber-300 border-amber-400/40'
-                    : 'bg-slate-900 text-slate-500 border-slate-800'
-                }`}
+              <CalendarDays className="w-3.5 h-3.5 text-amber-400 ml-1.5" />
+              <select
+                value={showBoxingDates ? boxingKindFilter : 'off'}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val === 'off') {
+                    setShowBoxingDates(false);
+                  } else {
+                    setShowBoxingDates(true);
+                    setBoxingKindFilter(val as any);
+                  }
+                }}
+                className="bg-slate-900 border border-amber-400/30 text-amber-300 font-mono text-[11px] font-semibold rounded px-2.5 py-1 focus:outline-none focus:border-amber-400 cursor-pointer"
+                title="Single Boxing Dates Filter"
               >
-                <CalendarDays className="w-3 h-3 text-amber-400" />
-                Boxing Dates ({filteredBoxingDates.length})
-              </button>
-
-              {showBoxingDates && (
-                <select
-                  value={boxingKindFilter}
-                  onChange={(e) => setBoxingKindFilter(e.target.value as any)}
-                  className="bg-slate-900 border border-amber-400/30 text-amber-300 font-mono text-[11px] font-semibold rounded px-2 py-1 focus:outline-none focus:border-amber-400 cursor-pointer"
-                  title="Filter Boxing Dates by Type"
-                >
-                  <option value="all">All Boxing</option>
-                  <option value="perm">🥇 Perm Only</option>
-                  <option value="strong">Strong Only</option>
-                </select>
-              )}
+                <option value="all">🥊 Boxing: All ({rawBoxingDates.length})</option>
+                <option value="perm">🥇 Perm Only ({rawBoxingDates.filter((b) => b.kind === 'perm').length})</option>
+                <option value="strong">⚡ Strong Only ({rawBoxingDates.filter((b) => b.kind === 'strong').length})</option>
+                <option value="off">❌ Boxing: Off</option>
+              </select>
             </div>
-
-            <button
-              onClick={loadCandles}
-              disabled={isLoading}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-mono text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-300 transition-all shadow-md shadow-amber-400/20 disabled:opacity-50"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
-              Reload
-            </button>
           </div>
+
+          <button
+            onClick={() => loadCandles(false)}
+            disabled={isLoading}
+            className="flex items-center gap-1.5 px-3.5 py-1 rounded-lg font-mono text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-300 transition-all shadow-md shadow-amber-400/20 disabled:opacity-50"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
+            Reload Data
+          </button>
         </div>
 
         {/* Zerodha Kite Config Drawer */}
@@ -1928,8 +1969,8 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
             <span>Strong Walls (50-89%): {strongWalls.length} active</span>
           </div>
           <div className="flex items-center gap-2 text-purple-300">
-            <span className="w-2 h-2 rounded-full bg-purple-500" />
-            <span>Astro Departure Markers: {filteredAstroEvents.length}</span>
+            <Sparkles className="w-3 h-3 text-purple-400" />
+            <span>42-Signals: Highlighted in Tooltip</span>
           </div>
         </div>
       </div>
@@ -1997,23 +2038,6 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
           {/* Matrix Planet Aspects & Boxing Info Row */}
           {hoverAstroInfo && (
             <div className="border-t border-slate-800/80 pt-2.5 space-y-2 font-mono text-[11px]">
-              {/* Special Price-Date Box Wall Match Highlight Callout */}
-              {hoverAstroInfo.candleWallMatches && hoverAstroInfo.candleWallMatches.length > 0 && (
-                <div className="p-2 rounded-lg bg-gradient-to-r from-amber-500/25 via-amber-500/15 to-slate-900 border border-amber-400 text-xs flex flex-wrap items-center justify-between gap-2 shadow-md">
-                  <div className="text-amber-200 font-extrabold flex items-center gap-1.5">
-                    <Star className="w-4 h-4 text-amber-300 fill-amber-300 animate-pulse" />
-                    <span>⭐ SPECIAL DAY: PRICE-DATE WALL MATCH!</span>
-                  </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {hoverAstroInfo.candleWallMatches.map((wm, idx) => (
-                      <span key={idx} className="px-2 py-0.5 rounded bg-amber-400 text-slate-950 font-bold font-mono text-[11px]">
-                        {wm.matchType}: {wm.matchedPrice.toLocaleString()} ({wm.angleLabel || '0°'})
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-
               {/* Row 1: Planets at Pressure & Wall Distance Gap */}
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2 flex-wrap">
@@ -2035,30 +2059,34 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
                     hoverAstroInfo.wallAspectHits.map((hit, idx) => {
                       const pMeta = PLANET_META[hit.p];
                       const aspMeta = ASPECT_META[hit.a];
-                      const floorSig = getSignal(hit.p, hit.a, 'depart', 'floor');
-                      const ceilSig = getSignal(hit.p, hit.a, 'depart', 'ceiling');
-                      const bestSig = [floorSig, ceilSig].filter(Boolean).sort((a, b) => b!.lift - a!.lift)[0];
+                      const sigMatch = find42SignalMatch(hit.p, hit.a);
 
                       return (
                         <div
                           key={idx}
-                          className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-slate-950 border border-slate-800 font-mono text-[11px]"
+                          className={`flex items-center gap-1.5 px-2 py-0.5 rounded font-mono text-[11px] transition-all ${
+                            sigMatch
+                              ? 'bg-amber-500/20 border-2 border-amber-400 text-amber-200 shadow-md shadow-amber-500/20'
+                              : 'bg-slate-950 border border-slate-800'
+                          }`}
                         >
                           <span className="w-2 h-2 rounded-full" style={{ backgroundColor: aspMeta?.color || '#888' }} />
                           <span style={{ color: pMeta?.color || '#fff' }}>{pMeta?.sym}</span>
                           <span className="text-slate-200 font-medium">{hit.p}</span>
                           <span style={{ color: aspMeta?.color || '#ccc' }}>{aspMeta?.abbr || hit.a}</span>
                           <span className="text-slate-500 text-[10px]">({hit.o}°)</span>
-                          {showAstroSignals && bestSig && (
+
+                          {showAstroSignals && sigMatch && (
                             <span
-                              className="px-1.5 py-0.2 rounded text-[10px] font-bold ml-0.5"
+                              className="px-1.5 py-0.5 rounded text-[10px] font-extrabold ml-1 uppercase tracking-wider flex items-center gap-1 shadow"
                               style={{
-                                backgroundColor: TIER_META[bestSig.tier].bg,
-                                color: TIER_META[bestSig.tier].color,
-                                border: `1px solid ${TIER_META[bestSig.tier].border}`
+                                backgroundColor: TIER_META[sigMatch.tier]?.bg || 'rgba(232, 199, 102, 0.2)',
+                                color: TIER_META[sigMatch.tier]?.color || '#e8c766',
+                                border: `1px solid ${TIER_META[sigMatch.tier]?.border || 'rgba(232, 199, 102, 0.5)'}`
                               }}
+                              title={`${sigMatch.desc} (Lift: ${sigMatch.lift.toFixed(2)}x, p: ${sigMatch.p})`}
                             >
-                              {TIER_META[bestSig.tier].icon} {bestSig.lift.toFixed(1)}×
+                              ⚡ 42-SIG: {TIER_META[sigMatch.tier]?.icon} {sigMatch.tier.toUpperCase()} {sigMatch.lift.toFixed(1)}× {sigMatch.direction}
                             </span>
                           )}
                         </div>
@@ -2070,40 +2098,70 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
                 </div>
               </div>
 
-              {/* Row 2: Date Boxing, Wall Syncs & Price Boxing Info */}
+              {/* Row 2: Date Spoke -> Market Price 36-Harmonics (S + 36 * k) */}
+              <div className="flex flex-wrap items-center gap-2 border-t border-slate-800/60 pt-2 text-[11px]">
+                <span className="text-amber-300 font-bold flex items-center gap-1 text-[10px] uppercase shrink-0">
+                  <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Date Spoke {hoverAstroInfo.dateHarmonics.dateSpoke} (Ring 36 / {hoverAstroInfo.dateHarmonics.dateDegree}°):</span>
+                </span>
+                <div className="flex items-center gap-1.5 flex-wrap font-mono text-[10px]">
+                  <span className="px-2 py-0.5 bg-amber-500/20 rounded border border-amber-500/40 text-amber-300 font-bold">
+                    Harmonic Price: <strong className="text-amber-200">{hoverAstroInfo.dateHarmonics.pHarmExact.toLocaleString()}</strong> ({hoverAstroInfo.dateHarmonics.dateSpoke} + 36×{hoverAstroInfo.dateHarmonics.kMultiplier})
+                  </span>
+                  <span className="px-2 py-0.5 bg-slate-950 rounded border border-slate-800 text-teal-300">
+                    36-Ring Price: <strong className="text-slate-200">{hoverAstroInfo.dateHarmonics.pRingHarm.toLocaleString()}</strong> ([{hoverAstroInfo.dateHarmonics.dateSpoke} + 36×{hoverAstroInfo.dateHarmonics.kRingMultiplier}]×100)
+                  </span>
+                  <span className="px-2 py-0.5 bg-slate-950 rounded border border-slate-800 text-slate-400">
+                    Adj: <span className="text-slate-300">{hoverAstroInfo.dateHarmonics.pHarmPrev.toLocaleString()}</span> / <span className="text-slate-300">{hoverAstroInfo.dateHarmonics.pHarmNext.toLocaleString()}</span>
+                  </span>
+                  {hoverAstroInfo.dateHarmonics.isHarmonicMatch && (
+                    <span className="px-2 py-0.5 rounded bg-amber-400 text-slate-950 font-extrabold text-[10px] flex items-center gap-1 shadow animate-pulse">
+                      ✨ CANDLE HARMONIC CONFIRMATION
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* Row 3: Closest Wall Harmonics (180°, 120°, 90°, 0°) */}
+              <div className="flex flex-wrap items-center gap-2 border-t border-slate-800/60 pt-2 text-[11px]">
+                <span className="text-amber-300 font-bold flex items-center gap-1 text-[10px] uppercase shrink-0">
+                  <Target className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Wall ({hoverAstroInfo.closestWallHarmonics.wallPrice.toLocaleString()}) Harmonics:</span>
+                </span>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="px-2 py-0.5 bg-amber-500/20 rounded border border-amber-500/40 font-mono text-amber-300 text-[10px] font-bold">
+                    0°: <strong className="text-amber-200">{hoverAstroInfo.closestWallHarmonics.h0.toLocaleString()}</strong>
+                  </span>
+                  <span className="px-2 py-0.5 bg-slate-950 rounded border border-slate-800 font-mono text-teal-300 text-[10px] font-medium">
+                    90°: <strong className="text-slate-200">{hoverAstroInfo.closestWallHarmonics.h90[0].toLocaleString()}</strong> / <strong className="text-slate-200">{hoverAstroInfo.closestWallHarmonics.h90[1].toLocaleString()}</strong>
+                  </span>
+                  <span className="px-2 py-0.5 bg-slate-950 rounded border border-slate-800 font-mono text-teal-300 text-[10px] font-medium">
+                    120°: <strong className="text-slate-200">{hoverAstroInfo.closestWallHarmonics.h120[0].toLocaleString()}</strong> / <strong className="text-slate-200">{hoverAstroInfo.closestWallHarmonics.h120[1].toLocaleString()}</strong>
+                  </span>
+                  <span className="px-2 py-0.5 bg-slate-950 rounded border border-slate-800 font-mono text-teal-300 text-[10px] font-medium">
+                    180°: <strong className="text-slate-200">{hoverAstroInfo.closestWallHarmonics.h180[0].toLocaleString()}</strong> / <strong className="text-slate-200">{hoverAstroInfo.closestWallHarmonics.h180[1].toLocaleString()}</strong>
+                  </span>
+                </div>
+              </div>
+
+              {/* Row 4: Date Boxing, Wall Syncs & Price Boxing Info */}
               <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-800/60 pt-2 text-[11px]">
                 {/* Date Boxing Match Indicator */}
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-amber-300 font-bold flex items-center gap-1 text-[10px] uppercase">
                     <CalendarDays className="w-3.5 h-3.5 text-amber-400" />
-                    <span>36-H Boxing:</span>
+                    <span>36-H Boxing Date:</span>
                   </span>
                   {hoverAstroInfo.matchedBoxingDate ? (
-                    <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex items-center gap-1.5 flex-wrap">
                       <span className="px-2 py-0.5 rounded bg-amber-400/20 text-amber-300 border border-amber-400/40 font-bold text-[10px] flex items-center gap-1">
-                        🥊 {hoverAstroInfo.matchedBoxingDate.kind.toUpperCase()} MATCH ({hoverAstroInfo.matchedBoxingDate.date})
+                        🥊 {hoverAstroInfo.matchedBoxingDate.kind.toUpperCase()} BOXING ({hoverAstroInfo.matchedBoxingDate.date})
                         {hoverAstroInfo.matchedBoxingDate.snappedFrom && ` [snapped from ${hoverAstroInfo.matchedBoxingDate.snappedFrom}]`}
                       </span>
-                      <div className="flex items-center gap-1 text-[10px]">
-                        <span className="text-slate-400">Walls:</span>
-                        {[...hoverAstroInfo.matchedBoxingDate.perm, ...hoverAstroInfo.matchedBoxingDate.strong].map((p) => (
-                          <span key={p} className="px-1 bg-slate-950 rounded border border-slate-800 font-mono text-amber-300 text-[10px]">
-                            {p.toLocaleString()}
-                          </span>
-                        ))}
-                      </div>
-                      {hoverAstroInfo.matchedBoxingDate.syncPrices && hoverAstroInfo.matchedBoxingDate.syncPrices.length > 0 && (
-                        <div className="flex items-center gap-1 text-[10px]">
-                          <span className="text-amber-300 font-semibold">Sync Turn Targets:</span>
-                          {hoverAstroInfo.matchedBoxingDate.syncPrices.slice(0, 8).map((sp) => (
-                            <span key={sp} className="px-1 bg-amber-500/20 rounded border border-amber-500/30 font-mono text-amber-200 text-[10px] font-bold">
-                              {sp.toLocaleString()}
-                            </span>
-                          ))}
-                          {hoverAstroInfo.matchedBoxingDate.syncPrices.length > 8 && (
-                            <span className="text-[10px] text-slate-400">+{hoverAstroInfo.matchedBoxingDate.syncPrices.length - 8} more</span>
-                          )}
-                        </div>
+                      {hoverAstroInfo.candleWallMatches && hoverAstroInfo.candleWallMatches.length > 0 && (
+                        <span className="px-2 py-0.5 rounded bg-amber-400 text-slate-950 font-extrabold text-[10px] flex items-center gap-1 shadow">
+                          ⭐ SPECIAL DAY ({hoverAstroInfo.candleWallMatches.map((wm) => `${wm.matchedPrice.toLocaleString()} ${wm.angleLabel || '0°'}`).join(', ')})
+                        </span>
                       )}
                     </div>
                   ) : hoverAstroInfo.nextBoxingDate ? (
@@ -2111,7 +2169,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
                       Next Boxing: <strong className="text-amber-300">{hoverAstroInfo.nextBoxingDate.date}</strong> ({hoverAstroInfo.nextBoxingDate.kind})
                     </span>
                   ) : (
-                    <span className="text-slate-500 text-[10px]">No active boxing date</span>
+                    <span className="text-slate-500 text-[10px]">No active 36-H date</span>
                   )}
                 </div>
 
