@@ -225,14 +225,6 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
       return true;
     }
   });
-  const [showPointingArrows, setShowPointingArrows] = useState<boolean>(() => {
-    try {
-      const v = localStorage.getItem('tt_showPointingArrows');
-      return v !== null ? JSON.parse(v) : true;
-    } catch (e) {
-      return true;
-    }
-  });
   const [boxingKindFilter, setBoxingKindFilter] = useState<'all' | 'perm' | 'strong'>(() => {
     try {
       const v = localStorage.getItem('tt_boxingKindFilter');
@@ -793,15 +785,16 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
   }, [matrix, dateFrom, dateTo, priceLo, priceHi, orb, minHighlight]);
 
   const filteredAstroEvents = useMemo(() => {
+    const visibleCandleDates = new Set(candles.map((c) => c.timeStr.slice(0, 10)));
     return rawAstroEvents
       .filter((ev) => {
         if (!ev.sig) return false;
-        if (astroTierFilter !== 'all' && ev.sig.tier !== astroTierFilter) return false;
-        if (astroDirectionFilter !== 'all' && ev.sig.direction !== astroDirectionFilter) return false;
+        // Highlight astro signals ONLY on displayed/evaluated dates (visible candles)
+        if (!visibleCandleDates.has(ev.date)) return false;
         return true;
       })
       .sort((a, b) => a.date.localeCompare(b.date));
-  }, [rawAstroEvents, astroTierFilter, astroDirectionFilter]);
+  }, [rawAstroEvents, candles]);
 
   // Pointing Arrow Leader Line Overlay Redraw Logic
   const redrawLeaderCalloutsRef = useRef<() => void>(() => {});
@@ -887,56 +880,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, width, height);
 
-    if (!showPointingArrows) {
-      ctx.restore();
-      return;
-    }
-
-    interface CalloutCandidate {
-      id: string;
-      time?: Time;
-      xOverride?: number;
-      price: number;
-      title: string;
-      subtitle: string;
-      tierLabel: string;
-      borderColor: string;
-      bgTint: string;
-      isUp: boolean;
-      isBoxingDate?: boolean;
-      dateStr?: string;
-    }
-
-    const candidateList: CalloutCandidate[] = [];
-
-    // 1. Astro departure signals (ONLY if showAstroSignals is enabled)
-    if (showAstroSignals) {
-      filteredAstroEvents.forEach((ev, idx) => {
-        const xCoord = findXCoordinateForDate(ev.date);
-        if (xCoord !== null) {
-          const isGold = ev.sig?.tier === 'gold';
-          const isSilver = ev.sig?.tier === 'silver';
-          const tierLabel = isGold ? '🥇 GOLD' : isSilver ? '🥈 SILVER' : '🥉 BRONZE';
-          const isUp = ev.sig?.direction === 'UP';
-          const color = isGold ? '#f59e0b' : isSilver ? '#06b6d4' : '#a855f7';
-          const bgTint = isGold ? 'rgba(245, 158, 11, 0.22)' : isSilver ? 'rgba(6, 182, 212, 0.22)' : 'rgba(168, 85, 247, 0.22)';
-
-          candidateList.push({
-            id: `astro_${ev.date}_${idx}`,
-            xOverride: xCoord,
-            price: ev.price,
-            title: `${tierLabel} ASTRO`,
-            subtitle: `${ev.body} ${ev.aspect}`,
-            tierLabel: isUp ? '↑ BULL DEPART' : '↓ BEAR DEPART',
-            borderColor: color,
-            bgTint,
-            isUp
-          });
-        }
-      });
-    }
-
-    // 2. Boxing Dates as clean vertical lines with top date badges across chart canvas
+    // Boxing Dates as clean vertical lines with top date badges across chart canvas
     if (showBoxingDates) {
       let lastX = -999;
       let lastYLevel = 0;
@@ -1038,147 +982,8 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
       });
     }
 
-    interface PlacedCallout {
-      x: number;
-      y: number;
-      boxX: number;
-      boxY: number;
-      w: number;
-      h: number;
-      cand: CalloutCandidate;
-      position: 'above' | 'below';
-    }
-
-    const placed: PlacedCallout[] = [];
-    const minOverlapX = 80;
-
-    candidateList.forEach((cand) => {
-      const xCoord = cand.xOverride !== undefined ? cand.xOverride : (cand.time !== undefined ? chart.timeScale().timeToCoordinate(cand.time) : null);
-      const rawY = candleSeries.priceToCoordinate(cand.price);
-      const yCoord = (rawY !== null && !isNaN(rawY)) ? rawY : height * 0.4;
-
-      if (xCoord === null) return;
-      if (xCoord < -100 || xCoord > width + 100) return;
-
-      const position: 'above' | 'below' = yCoord > height * 0.4 ? 'above' : 'below';
-
-      let step = 0;
-      let boxY = position === 'above' ? yCoord - 65 : yCoord + 65;
-
-      let overlap = true;
-      let maxLoops = 6;
-      while (overlap && maxLoops > 0) {
-        overlap = false;
-        for (const p of placed) {
-          if (Math.abs(p.x - xCoord) < minOverlapX && Math.abs(p.boxY - boxY) < 30) {
-            overlap = true;
-            step++;
-            boxY = position === 'above' ? yCoord - (65 + step * 34) : yCoord + (65 + step * 34);
-            break;
-          }
-        }
-        maxLoops--;
-      }
-
-      const clampedBoxY = Math.max(30, Math.min(height - 40, boxY));
-      const boxX = Math.max(75, Math.min(width - 75, xCoord));
-
-      placed.push({
-        x: xCoord,
-        y: yCoord,
-        boxX,
-        boxY: clampedBoxY,
-        w: 135,
-        h: 36,
-        cand,
-        position
-      });
-    });
-
-    // Render Callouts
-    placed.forEach(({ x, y, boxX, boxY, w, h, cand, position }) => {
-      const boxLeft = boxX - w / 2;
-      const boxTop = boxY - h / 2;
-      const lineAttachY = position === 'above' ? boxTop + h : boxTop;
-
-      const aSize = 6;
-      const arrowLength = 9;
-      const arrowBaseY = position === 'above' ? y - arrowLength : y + arrowLength;
-
-      // 1. Dashed Leader Line from Callout Box to Arrow Base
-      ctx.beginPath();
-      ctx.setLineDash([4, 3]);
-      ctx.strokeStyle = cand.borderColor;
-      ctx.lineWidth = 1.3;
-      ctx.moveTo(boxX, lineAttachY);
-      ctx.lineTo(x, arrowBaseY);
-      ctx.stroke();
-      ctx.setLineDash([]);
-
-      // 2. Pointing Arrowhead directly touching target (x, y)
-      ctx.beginPath();
-      ctx.moveTo(x, y);
-      if (position === 'above') {
-        ctx.lineTo(x - aSize, y - arrowLength);
-        ctx.lineTo(x + aSize, y - arrowLength);
-      } else {
-        ctx.lineTo(x - aSize, y + arrowLength);
-        ctx.lineTo(x + aSize, y + arrowLength);
-      }
-      ctx.closePath();
-      ctx.fillStyle = cand.borderColor;
-      ctx.fill();
-
-      // 3. Glowing Center Anchor Dot at exact target coordinate (x, y)
-      ctx.beginPath();
-      ctx.arc(x, y, 2.5, 0, Math.PI * 2);
-      ctx.fillStyle = '#090e1a';
-      ctx.fill();
-      ctx.lineWidth = 1.2;
-      ctx.strokeStyle = cand.borderColor;
-      ctx.stroke();
-
-      // Rounded Callout Box Background
-      ctx.save();
-      ctx.shadowColor = 'rgba(0, 0, 0, 0.7)';
-      ctx.shadowBlur = 10;
-      ctx.shadowOffsetY = 3;
-
-      ctx.beginPath();
-      const r = 6;
-      ctx.moveTo(boxLeft + r, boxTop);
-      ctx.lineTo(boxLeft + w - r, boxTop);
-      ctx.quadraticCurveTo(boxLeft + w, boxTop, boxLeft + w, boxTop + r);
-      ctx.lineTo(boxLeft + w, boxTop + h - r);
-      ctx.quadraticCurveTo(boxLeft + w, boxTop + h, boxLeft + w - r, boxTop + h);
-      ctx.lineTo(boxLeft + r, boxTop + h);
-      ctx.quadraticCurveTo(boxLeft, boxTop + h, boxLeft, boxTop + h - r);
-      ctx.lineTo(boxLeft, boxTop + r);
-      ctx.quadraticCurveTo(boxLeft, boxTop, boxLeft + r, boxTop);
-      ctx.closePath();
-
-      ctx.fillStyle = '#090e1a';
-      ctx.fill();
-      ctx.restore();
-
-      ctx.lineWidth = 1.5;
-      ctx.strokeStyle = cand.borderColor;
-      ctx.stroke();
-
-      // Text inside Callout Box
-      ctx.font = 'bold 10px monospace';
-      ctx.fillStyle = cand.borderColor;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'top';
-      ctx.fillText(cand.title, boxX, boxTop + 4);
-
-      ctx.font = '9.5px monospace';
-      ctx.fillStyle = '#cbd5e1';
-      ctx.fillText(cand.subtitle, boxX, boxTop + 18);
-    });
-
     ctx.restore();
-  }, [showPointingArrows, showAstroSignals, showBoxingDates, filteredAstroEvents, filteredBoxingDates, findXCoordinateForDate]);
+  }, [showBoxingDates, filteredBoxingDates, findXCoordinateForDate]);
 
   useEffect(() => {
     redrawLeaderCalloutsRef.current = redrawLeaderCallouts;
@@ -1535,7 +1340,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
     const hasAstroMarkers = showAstroSignals && filteredAstroEvents.length > 0;
     const hasBoxingMarkers = showBoxingDates && filteredBoxingDates.length > 0;
 
-    if (!showPointingArrows && (hasAstroMarkers || hasBoxingMarkers) && candles.length > 0) {
+    if ((hasAstroMarkers || hasBoxingMarkers) && candles.length > 0) {
       const dateToTimestamp = new Map<string, Time>();
 
       candles.forEach((c) => {
@@ -1570,7 +1375,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
               position: position,
               color: color,
               shape: shape,
-              text: showPointingArrows ? '' : `${tierLabel} ${ev.price} (${ev.body})`
+              text: `${tierLabel} ${ev.price} (${ev.body})`
             });
           }
         });
@@ -1589,7 +1394,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
 
             if (hasWallMatch) {
               const matchedPriceStr = wallMatches.map((m) => `${m.matchedPrice.toLocaleString()} (${m.angleLabel || '0°'})`).join(', ');
-              const boxLabel = showPointingArrows ? '' : `⭐ MATCH [${matchedPriceStr}]`;
+              const boxLabel = `⭐ MATCH [${matchedPriceStr}]`;
               const boxColor = '#f59e0b'; // Gold highlight
 
               if (existing) {
@@ -1597,7 +1402,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
                   ...existing,
                   color: '#f59e0b',
                   shape: 'square',
-                  text: showPointingArrows ? '' : `⭐ ${existing.text} | MATCH ${matchedPriceStr}`
+                  text: `⭐ ${existing.text} | MATCH ${matchedPriceStr}`
                 });
               } else {
                 timeToMarker.set(matchTime, {
@@ -1611,13 +1416,13 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
             } else {
               const firstWall = isPerm ? (bd.perm[0] ?? bd.strong[0]) : (bd.strong[0] ?? bd.perm[0]);
               const wallStr = firstWall ? `@ ${firstWall.toLocaleString()}` : '';
-              const boxLabel = showPointingArrows ? '' : `🥊 BOX ${isPerm ? 'PERM' : 'STR'}${wallStr ? ` ${wallStr}` : ''}`;
+              const boxLabel = `🥊 BOX ${isPerm ? 'PERM' : 'STR'}${wallStr ? ` ${wallStr}` : ''}`;
               const boxColor = isPerm ? '#f59e0b' : '#14b8a6';
 
               if (existing) {
                 timeToMarker.set(matchTime, {
                   ...existing,
-                  text: showPointingArrows ? '' : `${existing.text} | ${boxLabel} (${bd.date.slice(5)})`
+                  text: `${existing.text} | ${boxLabel} (${bd.date.slice(5)})`
                 });
               } else {
                 timeToMarker.set(matchTime, {
@@ -1625,7 +1430,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
                   position: isPerm ? 'aboveBar' : 'belowBar',
                   color: boxColor,
                   shape: isPerm ? 'square' : 'circle',
-                  text: showPointingArrows ? '' : `${boxLabel} (${bd.date.slice(5)})`
+                  text: `${boxLabel} (${bd.date.slice(5)})`
                 });
               }
             }
@@ -1867,17 +1672,6 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
             </button>
 
             <button
-              onClick={focusOnCurrentDate}
-              title="Point Chart to Current Date (Today)"
-              className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-mono font-bold rounded text-teal-300 bg-teal-500/20 border border-teal-500/40 hover:bg-teal-500/30 transition-all"
-            >
-              <Target className="w-3.5 h-3.5 text-teal-400" />
-              <span>Current Date</span>
-            </button>
-
-            <div className="w-px h-4 bg-slate-800 my-auto" />
-
-            <button
               onClick={() => setIsPopout(!isPopout)}
               title={isPopout ? 'Exit Fullscreen Popout (ESC)' : 'Popout Fullscreen Terminal'}
               className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md font-mono text-xs font-bold transition-all ${
@@ -1924,47 +1718,19 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
               Strong Walls ({strongWalls.length})
             </button>
 
-            <div className="flex items-center gap-1.5 bg-slate-950 p-1 rounded-lg border border-slate-800">
-              <button
-                onClick={() => setShowAstroSignals(!showAstroSignals)}
-                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md font-mono text-[11px] font-semibold border transition-all ${
-                  showAstroSignals
-                    ? 'bg-purple-500/15 text-purple-300 border-purple-500/40'
-                    : 'bg-slate-900 text-slate-500 border-slate-800'
-                }`}
-              >
-                <Sparkles className="w-3 h-3 text-purple-400" />
-                Astro Signals ({filteredAstroEvents.length})
-              </button>
+            <button
+              onClick={() => setShowAstroSignals(!showAstroSignals)}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg font-mono text-[11px] font-semibold border transition-all ${
+                showAstroSignals
+                  ? 'bg-purple-500/15 text-purple-300 border-purple-500/40'
+                  : 'bg-slate-950 text-slate-500 border-slate-800'
+              }`}
+            >
+              <Sparkles className="w-3 h-3 text-purple-400" />
+              Astro Signals ({filteredAstroEvents.length})
+            </button>
 
-              {showAstroSignals && (
-                <>
-                  <select
-                    value={astroTierFilter}
-                    onChange={(e) => setAstroTierFilter(e.target.value as any)}
-                    className="bg-slate-900 border border-purple-500/30 text-purple-300 font-mono text-[11px] font-semibold rounded px-2 py-1 focus:outline-none focus:border-purple-400 cursor-pointer"
-                    title="Filter Astro Signals by Tier"
-                  >
-                    <option value="all">All Tiers</option>
-                    <option value="gold">🥇 Gold Only</option>
-                    <option value="silver">🥈 Silver Only</option>
-                    <option value="bronze">🥉 Bronze Only</option>
-                  </select>
-
-                  <select
-                    value={astroDirectionFilter}
-                    onChange={(e) => setAstroDirectionFilter(e.target.value as any)}
-                    className="bg-slate-900 border border-purple-500/30 text-purple-300 font-mono text-[11px] font-semibold rounded px-2 py-1 focus:outline-none focus:border-purple-400 cursor-pointer"
-                    title="Filter Astro Signals by Direction Bias"
-                  >
-                    <option value="all">All Dir</option>
-                    <option value="UP">Bullish ↑</option>
-                    <option value="DOWN">Bearish ↓</option>
-                  </select>
-                </>
-              )}
-            </div>
-
+            {/* Boxing Dates Filter (Primary Date Overlay Filter) */}
             <div className="flex items-center gap-1.5 bg-slate-950 p-1 rounded-lg border border-slate-800">
               <button
                 onClick={() => setShowBoxingDates(!showBoxingDates)}
@@ -1991,19 +1757,6 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
                 </select>
               )}
             </div>
-
-            <button
-              onClick={() => setShowPointingArrows(!showPointingArrows)}
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md font-mono text-[11px] font-semibold border transition-all ${
-                showPointingArrows
-                  ? 'bg-amber-400/20 text-amber-300 border-amber-400/40'
-                  : 'bg-slate-900 text-slate-500 border-slate-800'
-              }`}
-              title="Toggle Distance-Offset Pointing Arrows & Leader Lines"
-            >
-              <Target className="w-3 h-3 text-amber-400" />
-              Leader Arrows
-            </button>
 
             <button
               onClick={loadCandles}
