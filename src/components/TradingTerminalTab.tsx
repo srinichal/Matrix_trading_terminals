@@ -859,6 +859,10 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
       pHarmNext,
       kRingMultiplier: kRing,
       pRingHarm,
+      ringH0: pRingHarm,
+      ringH90: [pRingHarm - 900, pRingHarm + 900],
+      ringH120: [pRingHarm - 1200, pRingHarm + 1200],
+      ringH180: [pRingHarm - 1800, pRingHarm + 1800],
       isHarmonicMatch,
       isExactHarmonicHit,
       isRingHarmonicHit
@@ -2108,8 +2112,17 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
                   <span className="px-2 py-0.5 bg-amber-500/20 rounded border border-amber-500/40 text-amber-300 font-bold">
                     Harmonic Price: <strong className="text-amber-200">{hoverAstroInfo.dateHarmonics.pHarmExact.toLocaleString()}</strong> ({hoverAstroInfo.dateHarmonics.dateSpoke} + 36×{hoverAstroInfo.dateHarmonics.kMultiplier})
                   </span>
-                  <span className="px-2 py-0.5 bg-slate-950 rounded border border-slate-800 text-teal-300">
+                  <span className="px-2 py-0.5 bg-slate-950 rounded border border-slate-800 text-teal-300 font-medium">
                     36-Ring Price: <strong className="text-slate-200">{hoverAstroInfo.dateHarmonics.pRingHarm.toLocaleString()}</strong> ([{hoverAstroInfo.dateHarmonics.dateSpoke} + 36×{hoverAstroInfo.dateHarmonics.kRingMultiplier}]×100)
+                  </span>
+                  <span className="px-2 py-0.5 bg-slate-950 rounded border border-amber-500/30 text-amber-300 font-medium">
+                    90°: <strong className="text-slate-200">{hoverAstroInfo.dateHarmonics.ringH90[0].toLocaleString()}</strong> / <strong className="text-slate-200">{hoverAstroInfo.dateHarmonics.ringH90[1].toLocaleString()}</strong>
+                  </span>
+                  <span className="px-2 py-0.5 bg-slate-950 rounded border border-amber-500/30 text-amber-300 font-medium">
+                    120°: <strong className="text-slate-200">{hoverAstroInfo.dateHarmonics.ringH120[0].toLocaleString()}</strong> / <strong className="text-slate-200">{hoverAstroInfo.dateHarmonics.ringH120[1].toLocaleString()}</strong>
+                  </span>
+                  <span className="px-2 py-0.5 bg-slate-950 rounded border border-amber-500/30 text-amber-300 font-medium">
+                    180°: <strong className="text-slate-200">{hoverAstroInfo.dateHarmonics.ringH180[0].toLocaleString()}</strong> / <strong className="text-slate-200">{hoverAstroInfo.dateHarmonics.ringH180[1].toLocaleString()}</strong>
                   </span>
                   <span className="px-2 py-0.5 bg-slate-950 rounded border border-slate-800 text-slate-400">
                     Adj: <span className="text-slate-300">{hoverAstroInfo.dateHarmonics.pHarmPrev.toLocaleString()}</span> / <span className="text-slate-300">{hoverAstroInfo.dateHarmonics.pHarmNext.toLocaleString()}</span>
