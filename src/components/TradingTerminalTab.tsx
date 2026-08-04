@@ -240,6 +240,8 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
     astroTierFilter,
     astroDirectionFilter,
     showVolume,
+    showBoxingDates,
+    boxingKindFilter,
     isLivePolling,
     pollIntervalSec,
     kiteApiKey,
