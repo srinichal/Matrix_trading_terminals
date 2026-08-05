@@ -870,14 +870,13 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
       });
     }
 
-    const wallP = closestWall.price;
     const closestWallHarmonics = {
-      wallPrice: wallP,
+      wallPrice: closestWall.price,
       type: closestWall.type,
-      h0: wallP,
-      h90: [wallP - 900, wallP + 900],
-      h120: [wallP - 1200, wallP + 1200],
-      h180: [wallP - 1800, wallP + 1800]
+      h0: closestWall.price,
+      h90: [closestWall.price - 900, closestWall.price + 900],
+      h120: [closestWall.price - 1200, closestWall.price + 1200],
+      h180: [closestWall.price - 1800, closestWall.price + 1800]
     };
 
     // Date Wheel Spoke S & 36-Harmonic Price Arithmetic (S + 36 * k)
@@ -909,17 +908,104 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
     const kRing = Math.round((Math.floor(mktPrice / 100) - dateSpoke) / 36);
     const pRingHarm = (dateSpoke + 36 * kRing) * 100;
 
+    // Date ring harmonic set — pRingHarm and its 90°/120°/180° components
+    const dateRingVals = new Set([
+      pRingHarm,
+      pRingHarm - 900,  pRingHarm + 900,
+      pRingHarm - 1200, pRingHarm + 1200,
+      pRingHarm - 1800, pRingHarm + 1800,
+    ]);
+
+    // Wall harmonic set — wallP and its 90°/120°/180° components
+    const wallP = closestWallHarmonics.wallPrice;
+    const wallVals = new Set([
+      wallP,
+      wallP - 900,  wallP + 900,
+      wallP - 1200, wallP + 1200,
+      wallP - 1800, wallP + 1800,
+    ]);
+
+    // Find the intersection — exact arithmetic, no orb
+    const matchedHarmonicPrices = [...dateRingVals].filter(v => wallVals.has(v));
+    const isRingWallMatch = matchedHarmonicPrices.length > 0;
+
+    // Identify the degree label on each side for the first matched price
+    const harmDegreeLabel = (base: number, val: number): string => {
+      const diff = Math.abs(val - base);
+      if (diff === 0)    return '0°';
+      if (diff === 900)  return '90°';
+      if (diff === 1200) return '120°';
+      if (diff === 1800) return '180°';
+      return '';
+    };
+    const firstMatch = (() => {
+      if (matchedHarmonicPrices.length === 0) return null;
+      const wallZero = matchedHarmonicPrices.find(v => v === wallP);
+      if (wallZero !== undefined) return wallZero;
+      const nonZeroDate = matchedHarmonicPrices.find(v => v !== pRingHarm);
+      if (nonZeroDate !== undefined) return nonZeroDate;
+      return matchedHarmonicPrices[0];
+    })();
+    const matchDateDegree = firstMatch !== null ? harmDegreeLabel(pRingHarm, firstMatch) : '';
+    const matchWallDegree = firstMatch !== null ? harmDegreeLabel(wallP, firstMatch) : '';
+
+    // Keep for display only — NOT used for match flag
     const isExactHarmonicHit = Boolean(displayCandle && (
       (displayCandle.low <= pHarmExact && displayCandle.high >= pHarmExact) ||
       Math.abs(displayCandle.close - pHarmExact) / pHarmExact <= 0.0025
     ));
-
     const isRingHarmonicHit = Boolean(displayCandle && (
       (displayCandle.low <= pRingHarm && displayCandle.high >= pRingHarm) ||
       Math.abs(displayCandle.close - pRingHarm) / pRingHarm <= 0.0025
     ));
 
-    const isHarmonicMatch = isExactHarmonicHit || isRingHarmonicHit;
+    // Match flag is now ring-wall intersection only
+    const isHarmonicMatch = isRingWallMatch;
+
+    // Count consecutive banner days ending at the current candle
+    // Walk backwards through candles until we find one where the match would be off
+    let bannerDayCount = 0;
+    if (isRingWallMatch) {
+      // Current candle is day 1 at minimum
+      bannerDayCount = 1;
+      // Walk backwards through previous candles
+      const currentIdx = candles.findIndex(
+        (c) => (c.timeStr ?? getDateStrInIST(c.time)).slice(0, 10) === dateStr
+      );
+      for (let idx = currentIdx - 1; idx >= 0; idx--) {
+        const prevCandle = candles[idx];
+        const prevClose = prevCandle.close;
+        const prevSpoke = (() => {
+          // Forward-fill spoke from NIFTY_SWINGS before this candle's date
+          const prevDateStr = (prevCandle.timeStr ?? getDateStrInIST(prevCandle.time)).slice(0, 10);
+          let sp = 0;
+          for (let si = NIFTY_SWINGS.length - 1; si >= 0; si--) {
+            if (NIFTY_SWINGS[si].date < prevDateStr) { sp = NIFTY_SWINGS[si].spoke; break; }
+          }
+          return sp;
+        })();
+        const prevKRing = Math.round((prevClose / 100 - prevSpoke) / 36);
+        const prevRingHarm = (prevSpoke + 36 * prevKRing) * 100;
+        const prevKw = Math.round(prevClose / 1200);
+        const prevWall = [-2,-1,0,1,2].map(i => (prevKw+i)*1200)
+          .reduce((a,b) => Math.abs(b-prevClose)<Math.abs(a-prevClose)?b:a);
+        const prevDateVals = new Set([
+          prevRingHarm,
+          prevRingHarm-900, prevRingHarm+900,
+          prevRingHarm-1200,prevRingHarm+1200,
+          prevRingHarm-1800,prevRingHarm+1800,
+        ]);
+        const prevWallVals = new Set([
+          prevWall,
+          prevWall-900, prevWall+900,
+          prevWall-1200,prevWall+1200,
+          prevWall-1800,prevWall+1800,
+        ]);
+        const prevMatch = [...prevDateVals].some(v => prevWallVals.has(v));
+        if (!prevMatch) break;
+        bannerDayCount++;
+      }
+    }
 
     const dateHarmonics = {
       dateSpoke,
@@ -930,13 +1016,23 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
       pHarmNext,
       kRingMultiplier: kRing,
       pRingHarm,
-      ringH0: pRingHarm,
-      ringH90: [pRingHarm - 900, pRingHarm + 900],
+      ringH0:   pRingHarm,
+      ringH90:  [pRingHarm - 900,  pRingHarm + 900],
       ringH120: [pRingHarm - 1200, pRingHarm + 1200],
       ringH180: [pRingHarm - 1800, pRingHarm + 1800],
+      wallH0:   wallP,
+      wallH90:  [wallP - 900,  wallP + 900],
+      wallH120: [wallP - 1200, wallP + 1200],
+      wallH180: [wallP - 1800, wallP + 1800],
+      matchedHarmonicPrices,   // array of matched price values
+      firstMatch,              // the primary matched price (null if no match)
+      matchDateDegree,         // e.g. "120°" — which date harmonic matched
+      matchWallDegree,         // e.g. "0°"  — which wall harmonic matched
       isHarmonicMatch,
+      isRingWallMatch,
       isExactHarmonicHit,
-      isRingHarmonicHit
+      isRingHarmonicHit,
+      bannerDayCount,          // how many consecutive days banner has been ON
     };
 
     return {
@@ -954,7 +1050,7 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
       candleWallMatches,
       syncTargets
     };
-  }, [displayCandle, matrix, permWalls, strongWalls, orb, rawBoxingDates, gannBoxes]);
+  }, [displayCandle, candles, matrix, permWalls, strongWalls, orb, rawBoxingDates, gannBoxes]);
 
   // Extract Critical Astro Signals
   const rawAstroEvents = useMemo(() => {
@@ -2278,23 +2374,85 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
                     Harmonic Price: <strong className="text-amber-200">{hoverAstroInfo.dateHarmonics.pHarmExact.toLocaleString()}</strong> ({hoverAstroInfo.dateHarmonics.dateSpoke} + 36×{hoverAstroInfo.dateHarmonics.kMultiplier})
                   </span>
                   <span className="px-2 py-0.5 bg-slate-900 rounded border border-slate-800 text-teal-300 font-medium">
-                    36-Ring Price: <strong className="text-slate-200">{hoverAstroInfo.dateHarmonics.pRingHarm.toLocaleString()}</strong> ([{hoverAstroInfo.dateHarmonics.dateSpoke} + 36×{hoverAstroInfo.dateHarmonics.kRingMultiplier}]×100)
+                    36-Ring Price:{' '}
+                    <strong className={hoverAstroInfo.dateHarmonics.matchedHarmonicPrices.includes(hoverAstroInfo.dateHarmonics.pRingHarm)
+                      ? 'text-amber-300 underline decoration-amber-400'
+                      : 'text-slate-200'}>
+                      {hoverAstroInfo.dateHarmonics.pRingHarm.toLocaleString()}
+                    </strong>{' '}
+                    ([{hoverAstroInfo.dateHarmonics.dateSpoke} + 36×{hoverAstroInfo.dateHarmonics.kRingMultiplier}]×100)
                   </span>
                   <span className="px-2 py-0.5 bg-slate-900 rounded border border-amber-500/30 text-amber-300 font-medium">
-                    90°: <strong className="text-slate-200">{hoverAstroInfo.dateHarmonics.ringH90[0].toLocaleString()}</strong> / <strong className="text-slate-200">{hoverAstroInfo.dateHarmonics.ringH90[1].toLocaleString()}</strong>
+                    90°:{' '}
+                    <strong className={hoverAstroInfo.dateHarmonics.matchedHarmonicPrices.includes(hoverAstroInfo.dateHarmonics.ringH90[0])
+                      ? 'text-amber-300 underline decoration-amber-400'
+                      : 'text-slate-200'}>
+                      {hoverAstroInfo.dateHarmonics.ringH90[0].toLocaleString()}
+                    </strong>
+                    {' / '}
+                    <strong className={hoverAstroInfo.dateHarmonics.matchedHarmonicPrices.includes(hoverAstroInfo.dateHarmonics.ringH90[1])
+                      ? 'text-amber-300 underline decoration-amber-400'
+                      : 'text-slate-200'}>
+                      {hoverAstroInfo.dateHarmonics.ringH90[1].toLocaleString()}
+                    </strong>
                   </span>
                   <span className="px-2 py-0.5 bg-slate-900 rounded border border-amber-500/30 text-amber-300 font-medium">
-                    120°: <strong className="text-slate-200">{hoverAstroInfo.dateHarmonics.ringH120[0].toLocaleString()}</strong> / <strong className="text-slate-200">{hoverAstroInfo.dateHarmonics.ringH120[1].toLocaleString()}</strong>
+                    120°:{' '}
+                    <strong className={hoverAstroInfo.dateHarmonics.matchedHarmonicPrices.includes(hoverAstroInfo.dateHarmonics.ringH120[0])
+                      ? 'text-amber-300 underline decoration-amber-400'
+                      : 'text-slate-200'}>
+                      {hoverAstroInfo.dateHarmonics.ringH120[0].toLocaleString()}
+                    </strong>
+                    {' / '}
+                    <strong className={hoverAstroInfo.dateHarmonics.matchedHarmonicPrices.includes(hoverAstroInfo.dateHarmonics.ringH120[1])
+                      ? 'text-amber-300 underline decoration-amber-400'
+                      : 'text-slate-200'}>
+                      {hoverAstroInfo.dateHarmonics.ringH120[1].toLocaleString()}
+                    </strong>
                   </span>
                   <span className="px-2 py-0.5 bg-slate-900 rounded border border-amber-500/30 text-amber-300 font-medium">
-                    180°: <strong className="text-slate-200">{hoverAstroInfo.dateHarmonics.ringH180[0].toLocaleString()}</strong> / <strong className="text-slate-200">{hoverAstroInfo.dateHarmonics.ringH180[1].toLocaleString()}</strong>
+                    180°:{' '}
+                    <strong className={hoverAstroInfo.dateHarmonics.matchedHarmonicPrices.includes(hoverAstroInfo.dateHarmonics.ringH180[0])
+                      ? 'text-amber-300 underline decoration-amber-400'
+                      : 'text-slate-200'}>
+                      {hoverAstroInfo.dateHarmonics.ringH180[0].toLocaleString()}
+                    </strong>
+                    {' / '}
+                    <strong className={hoverAstroInfo.dateHarmonics.matchedHarmonicPrices.includes(hoverAstroInfo.dateHarmonics.ringH180[1])
+                      ? 'text-amber-300 underline decoration-amber-400'
+                      : 'text-slate-200'}>
+                      {hoverAstroInfo.dateHarmonics.ringH180[1].toLocaleString()}
+                    </strong>
                   </span>
                   <span className="px-2 py-0.5 bg-slate-900 rounded border border-slate-800 text-slate-400">
                     Adj: <span className="text-slate-300">{hoverAstroInfo.dateHarmonics.pHarmPrev.toLocaleString()}</span> / <span className="text-slate-300">{hoverAstroInfo.dateHarmonics.pHarmNext.toLocaleString()}</span>
                   </span>
                   {hoverAstroInfo.dateHarmonics.isHarmonicMatch && (
-                    <span className="px-2 py-0.5 rounded bg-amber-400 text-slate-950 font-extrabold text-[10px] flex items-center gap-1 shadow animate-pulse">
-                      ✨ CANDLE HARMONIC CONFIRMATION
+                    <span className="flex items-center gap-1.5 flex-wrap">
+                      {/* Main banner pill */}
+                      <span className="px-2 py-0.5 rounded bg-amber-400 text-slate-950 font-extrabold text-[10px] flex items-center gap-1 shadow animate-pulse">
+                        ✦ HARMONIC SYNC
+                      </span>
+                      {/* Match detail: which degrees agree and at what price */}
+                      {hoverAstroInfo.dateHarmonics.firstMatch !== null && (
+                        <span className="px-2 py-0.5 rounded bg-amber-500/20 border border-amber-500/50 text-amber-200 font-bold text-[10px] font-mono">
+                          Date {hoverAstroInfo.dateHarmonics.matchDateDegree}
+                          {' = '}
+                          Wall {hoverAstroInfo.dateHarmonics.matchWallDegree}
+                          {' @ '}
+                          {hoverAstroInfo.dateHarmonics.firstMatch.toLocaleString()}
+                        </span>
+                      )}
+                      {/* Day counter */}
+                      <span className={`px-2 py-0.5 rounded border text-[10px] font-mono font-bold ${
+                        hoverAstroInfo.dateHarmonics.bannerDayCount >= 7
+                          ? 'bg-rose-500/20 border-rose-500/50 text-rose-300'
+                          : hoverAstroInfo.dateHarmonics.bannerDayCount >= 3
+                          ? 'bg-amber-500/20 border-amber-500/40 text-amber-300'
+                          : 'bg-slate-800 border-slate-700 text-slate-300'
+                      }`}>
+                        Day {hoverAstroInfo.dateHarmonics.bannerDayCount}
+                      </span>
                     </span>
                   )}
                 </div>
@@ -2310,16 +2468,54 @@ export const TradingTerminalTab: React.FC<TradingTerminalTabProps> = ({
                   </span>
                   <div className="flex items-center gap-1.5 flex-wrap">
                     <span className="px-2 py-0.5 bg-amber-500/20 rounded border border-amber-500/40 font-mono text-amber-300 text-[10px] font-bold">
-                      0°: <strong className="text-amber-200">{hoverAstroInfo.closestWallHarmonics.h0.toLocaleString()}</strong>
+                      0°:{' '}
+                      <strong className={hoverAstroInfo.dateHarmonics.matchedHarmonicPrices.includes(hoverAstroInfo.closestWallHarmonics.h0)
+                        ? 'text-amber-300 underline decoration-amber-400'
+                        : 'text-amber-200'}>
+                        {hoverAstroInfo.closestWallHarmonics.h0.toLocaleString()}
+                      </strong>
                     </span>
                     <span className="px-2 py-0.5 bg-slate-900 rounded border border-slate-800 font-mono text-teal-300 text-[10px] font-medium">
-                      90°: <strong className="text-slate-200">{hoverAstroInfo.closestWallHarmonics.h90[0].toLocaleString()}</strong> / <strong className="text-slate-200">{hoverAstroInfo.closestWallHarmonics.h90[1].toLocaleString()}</strong>
+                      90°:{' '}
+                      <strong className={hoverAstroInfo.dateHarmonics.matchedHarmonicPrices.includes(hoverAstroInfo.closestWallHarmonics.h90[0])
+                        ? 'text-amber-300 underline decoration-amber-400'
+                        : 'text-slate-200'}>
+                        {hoverAstroInfo.closestWallHarmonics.h90[0].toLocaleString()}
+                      </strong>
+                      {' / '}
+                      <strong className={hoverAstroInfo.dateHarmonics.matchedHarmonicPrices.includes(hoverAstroInfo.closestWallHarmonics.h90[1])
+                        ? 'text-amber-300 underline decoration-amber-400'
+                        : 'text-slate-200'}>
+                        {hoverAstroInfo.closestWallHarmonics.h90[1].toLocaleString()}
+                      </strong>
                     </span>
                     <span className="px-2 py-0.5 bg-slate-900 rounded border border-slate-800 font-mono text-teal-300 text-[10px] font-medium">
-                      120°: <strong className="text-slate-200">{hoverAstroInfo.closestWallHarmonics.h120[0].toLocaleString()}</strong> / <strong className="text-slate-200">{hoverAstroInfo.closestWallHarmonics.h120[1].toLocaleString()}</strong>
+                      120°:{' '}
+                      <strong className={hoverAstroInfo.dateHarmonics.matchedHarmonicPrices.includes(hoverAstroInfo.closestWallHarmonics.h120[0])
+                        ? 'text-amber-300 underline decoration-amber-400'
+                        : 'text-slate-200'}>
+                        {hoverAstroInfo.closestWallHarmonics.h120[0].toLocaleString()}
+                      </strong>
+                      {' / '}
+                      <strong className={hoverAstroInfo.dateHarmonics.matchedHarmonicPrices.includes(hoverAstroInfo.closestWallHarmonics.h120[1])
+                        ? 'text-amber-300 underline decoration-amber-400'
+                        : 'text-slate-200'}>
+                        {hoverAstroInfo.closestWallHarmonics.h120[1].toLocaleString()}
+                      </strong>
                     </span>
                     <span className="px-2 py-0.5 bg-slate-900 rounded border border-slate-800 font-mono text-teal-300 text-[10px] font-medium">
-                      180°: <strong className="text-slate-200">{hoverAstroInfo.closestWallHarmonics.h180[0].toLocaleString()}</strong> / <strong className="text-slate-200">{hoverAstroInfo.closestWallHarmonics.h180[1].toLocaleString()}</strong>
+                      180°:{' '}
+                      <strong className={hoverAstroInfo.dateHarmonics.matchedHarmonicPrices.includes(hoverAstroInfo.closestWallHarmonics.h180[0])
+                        ? 'text-amber-300 underline decoration-amber-400'
+                        : 'text-slate-200'}>
+                        {hoverAstroInfo.closestWallHarmonics.h180[0].toLocaleString()}
+                      </strong>
+                      {' / '}
+                      <strong className={hoverAstroInfo.dateHarmonics.matchedHarmonicPrices.includes(hoverAstroInfo.closestWallHarmonics.h180[1])
+                        ? 'text-amber-300 underline decoration-amber-400'
+                        : 'text-slate-200'}>
+                        {hoverAstroInfo.closestWallHarmonics.h180[1].toLocaleString()}
+                      </strong>
                     </span>
                   </div>
                 </div>
