@@ -156,6 +156,9 @@ export interface MarketPreset {
   defaultRangeDays: number;
 }
 
+// Re-export convenience types for the tab (actual types live in gannSqrt.ts)
+export type { GannDateEntry, GannProjection } from './lib/gannSqrt';
+
 // ── Swing Pivot types ─────────────────────────────────────────────────────
 
 /** One NIFTY 3%-ZigZag swing pivot (static dataset or user-entered). */
