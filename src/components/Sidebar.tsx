@@ -9,6 +9,7 @@ import {
   Target,
   CandlestickChart,
   CalendarRange,
+  TrendingUp,
   Layers,
   Sparkles,
   FileSpreadsheet,
@@ -90,6 +91,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const TABS: { id: TabType; label: string; icon: React.FC<{ className?: string }> }[] = [
     { id: 'terminal', label: 'Trading Terminal', icon: CandlestickChart },
     { id: 'boxingdates', label: 'Boxing Dates', icon: CalendarRange },
+    { id: 'gannsqrt', label: 'SQR Dates', icon: TrendingUp },
     { id: 'boxes', label: 'Box Breakouts', icon: Box },
     { id: 'matrix', label: 'Matrix Grid', icon: Grid3X3 },
     { id: 'overview', label: 'Overview', icon: LayoutDashboard },
