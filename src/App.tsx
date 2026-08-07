@@ -6,6 +6,7 @@ import { BoxBreakoutsTab } from './components/BoxBreakoutsTab';
 import { BoxingDatesTab } from './components/BoxingDatesTab';
 import { IntradayTab } from './components/IntradayTab';
 import { TradingTerminalTab } from './components/TradingTerminalTab';
+import { GannSqrtTab } from './components/GannSqrtTab';
 import { SignalsCatalogModal } from './components/SignalsCatalogModal';
 import { MatrixWallsModal } from './components/MatrixWallsModal';
 import { TabType } from './components/Navigation';
@@ -23,7 +24,8 @@ import {
   Box,
   Grid3X3,
   LayoutDashboard,
-  Target
+  Target,
+  TrendingUp
 } from 'lucide-react';
 
 export default function App() {
@@ -105,7 +107,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<TabType>(() => {
     try {
       const saved = localStorage.getItem('app_activeTab');
-      if (saved && ['terminal', 'overview', 'matrix', 'boxes', 'boxingdates', 'intraday'].includes(saved)) {
+      if (saved && ['terminal', 'overview', 'matrix', 'boxes', 'boxingdates', 'gannsqrt', 'intraday'].includes(saved)) {
         return saved as TabType;
       }
     } catch (e) {}
@@ -297,6 +299,7 @@ export default function App() {
   const TAB_TITLES: Record<string, { title: string; icon: React.FC<{ className?: string }> }> = {
     terminal: { title: 'Trading Terminal', icon: CandlestickChart },
     boxingdates: { title: 'Boxing Dates', icon: CalendarRange },
+    gannsqrt: { title: 'Gann Square-Root Series', icon: TrendingUp },
     boxes: { title: 'Box Breakouts', icon: Box },
     matrix: { title: 'Matrix Grid', icon: Grid3X3 },
     overview: { title: 'Overview Dashboard', icon: LayoutDashboard },
@@ -480,6 +483,14 @@ export default function App() {
               onRemoveUserSwing={(date) => setUserSwings(prev =>
                 prev.filter(x => x.date !== date)
               )}
+            />
+          )}
+
+          {activeTab === 'gannsqrt' && (
+            <GannSqrtTab
+              dateFrom={computedParams.dateFrom}
+              dateTo={computedParams.dateTo}
+              userSwings={userSwings}
             />
           )}
 
