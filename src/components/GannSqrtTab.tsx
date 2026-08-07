@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { TrendingUp, LayoutGrid, List, ChevronRight, X } from 'lucide-react';
 import { NIFTY_SWINGS } from '../data/niftySwings';
 import { SwingPivot } from '../types';
@@ -36,8 +36,17 @@ export const GannSqrtTab: React.FC<GannSqrtTabProps> = ({
 
   // ── Filters ──────────────────────────────────────────────────────────
   const [tierFilter, setTierFilter] = useState<'all' | 'apex-high' | 'apex' | 's1' | 's2'>('all');
+  const [monthFilter, setMonthFilter] = useState<string>(() => {
+    try { return localStorage.getItem('gannsqrt_month') || 'all'; } catch { return 'all'; }
+  });
   const [viewMode,   setViewMode]   = useState<'grid' | 'table'>('grid');
   const [selected,   setSelected]   = useState<GannDateEntry | null>(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('gannsqrt_month', monthFilter);
+    } catch {}
+  }, [monthFilter]);
 
   // ── Merged swing pool ─────────────────────────────────────────────────
   const allSwings = useMemo(() => {
@@ -59,11 +68,19 @@ export const GannSqrtTab: React.FC<GannSqrtTabProps> = ({
   const s1Count       = allDates.filter(d => d.tag === 's1').length;
   const s2Count       = allDates.filter(d => d.tag === 's2').length;
 
-  // ── Filtered ─────────────────────────────────────────────────────────
-  const filtered = useMemo(() =>
-    tierFilter === 'all' ? allDates : allDates.filter(d => d.tag === tierFilter),
-    [allDates, tierFilter]
+  // ── Month Filter & Filtered Dates ─────────────────────────────────────
+  const availableMonths = useMemo(() =>
+    Array.from(new Set(allDates.map(d => d.date.slice(0, 7)))).sort(),
+    [allDates]
   );
+
+  const filtered = useMemo(() => {
+    return allDates.filter(d => {
+      if (tierFilter !== 'all' && d.tag !== tierFilter) return false;
+      if (monthFilter !== 'all' && !d.date.startsWith(monthFilter)) return false;
+      return true;
+    });
+  }, [allDates, tierFilter, monthFilter]);
 
   // ── Helpers ───────────────────────────────────────────────────────────
   const getDow = (ds: string) =>
@@ -118,12 +135,32 @@ export const GannSqrtTab: React.FC<GannSqrtTabProps> = ({
                 ? 'bg-amber-400/20 border-amber-500/50 text-amber-200 font-bold'
                 : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
             }`}>
-            {t === 'all' ? 'All' :
+            {t === 'all' ? 'All Tiers' :
              t === 'apex-high' ? '🔴 Apex High' :
              t === 'apex'      ? '🟠 Apex' :
              t === 's1'        ? '🟡 Series 1' : '🟡 Series 2'}
           </button>
         ))}
+
+        {/* Month filter */}
+        <select
+          value={monthFilter}
+          onChange={e => setMonthFilter(e.target.value)}
+          className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs font-mono
+                     text-slate-200 focus:outline-none focus:border-amber-500 cursor-pointer">
+          <option value="all">All Months ({allDates.length})</option>
+          {availableMonths.map(m => {
+            const count = allDates.filter(d => d.date.startsWith(m)).length;
+            const [yr, mo] = m.split('-');
+            const dateObj = new Date(parseInt(yr), parseInt(mo) - 1, 1);
+            const label = dateObj.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+            return (
+              <option key={m} value={m}>
+                {label} ({count})
+              </option>
+            );
+          })}
+        </select>
 
         {/* View toggle */}
         <div className="flex items-center gap-1 ml-auto">
